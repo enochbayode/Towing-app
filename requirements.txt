@@ -20,3 +20,4 @@ python-jose[cryptography]
 
 # Environment & Utilities
 python-dotenv>=1.0.1
+pydantic[email]
