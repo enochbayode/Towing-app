@@ -14,3 +14,9 @@ pydantic-settings>=2.0.0
 # Utilities
 pytz>=2023.3
 httpx>=0.24.1
+
+bcrypt>=5.0.0
+python-jose[cryptography]
+
+# Environment & Utilities
+python-dotenv>=1.0.1
