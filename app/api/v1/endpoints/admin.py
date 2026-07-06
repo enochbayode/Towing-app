@@ -30,6 +30,7 @@ def generate_temp_password(length: int = 10) -> str:
     return ''.join(secrets.choice(alphabet) for i in range(length))
 
 
+
 # --- 1. INVITE A DRIVER ---
 @router.post("/drivers/invite", response_model=APIResponse[DriverResponse])
 async def invite_driver(
