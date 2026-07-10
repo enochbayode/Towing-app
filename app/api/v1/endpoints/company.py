@@ -1,4 +1,5 @@
 # app/api/v1/endpoints/company.py
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -22,6 +23,7 @@ from app.schemas.user import APIResponse
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 @router.post("/admin/register", response_model=APIResponse[CompanyResponse])
 async def register_company(
@@ -101,6 +103,7 @@ async def get_my_company(
         data=company
     )
 
+# update company information
 @router.patch("/me", response_model=APIResponse[CompanyResponse])
 async def update_my_company(
     company_update: CompanyUpdate,
@@ -145,7 +148,7 @@ async def update_my_company(
         data=company
     )
 
-
+# add payment account
 @router.post("/payment-account", response_model=APIResponse[PaymentAccountResponse])
 async def add_payment_account(
     account_in: PaymentAccountCreate,
@@ -155,6 +158,7 @@ async def add_payment_account(
     
     if not current_admin.company_id:
         raise HTTPException(status_code=400, detail="Register a company profile first.")
+    
 
     statement = select(PaymentAccount).where(PaymentAccount.company_id == current_admin.company_id)
     result = await session.execute(statement)
@@ -193,7 +197,97 @@ async def add_payment_account(
         data=new_account
     )
 
-# PATCH /payment-account
+
+# @router.post("/payment-account", response_model=APIResponse[PaymentAccountResponse])
+# async def add_payment_account(
+#     account_in: PaymentAccountCreate,
+#     session: AsyncSession = Depends(get_session),
+#     current_admin: Admin = Depends(get_current_admin)
+# ) -> Any:
+    
+#     # 1. Validate Admin Context
+#     if not current_admin.company_id:
+#         raise HTTPException(status_code=400, detail="Register a company profile first.")
+
+#     # 2. Prevent Duplicate Accounts
+#     statement = select(PaymentAccount).where(PaymentAccount.company_id == current_admin.company_id)
+#     result = await session.execute(statement)
+#     if result.scalar_one_or_none():
+#         raise HTTPException(status_code=400, detail="Your company already has a payout account.")
+
+#     # 3. Fetch Company Legal Name
+#     company_stmt = select(Company).where(Company.id == current_admin.company_id)
+#     company_result = await session.execute(company_stmt)
+#     company = company_result.scalar_one_or_none()
+
+#     if not company:
+#         raise HTTPException(status_code=404, detail="Company profile not found.")
+
+#     # 4. Paystack Resolution (Get the absolute truth from the bank)
+#     verified_account_name = await resolve_account_name(
+#         account_number=account_in.account_number,
+#         bank_code=account_in.bank_code
+#     )
+    
+#     if not verified_account_name:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="Could not verify this bank account. Please check the account number and bank code."
+#         )
+
+#     # 5. FRAUD PREVENTION: The Dual-Matching Algorithm
+#     official_company_name = company.name.lower().strip()
+    
+#     # Adjust this line depending on how your Admin model stores names!
+#     # If you use first and last name: f"{current_admin.first_name} {current_admin.last_name}".lower()
+#     director_name = current_admin.full_name.lower().strip() 
+    
+#     bank_account_name = verified_account_name.lower().strip()
+
+#     # Check 1: Does the bank name match the Company?
+#     company_match = (official_company_name in bank_account_name) or (bank_account_name in official_company_name)
+    
+#     # Check 2: Does the bank name match the Director/Admin?
+#     director_match = False
+#     if not company_match:
+#         # Split the director's name to handle different ordering (e.g., "Doe John" vs "John Doe")
+#         director_parts = director_name.split()
+#         # If at least the core names are present in the bank account name, it passes
+#         if all(part in bank_account_name for part in director_parts):
+#             director_match = True
+
+#     # If BOTH checks fail, block the request
+#     if not company_match and not director_match:
+#         logger.warning(
+#             f"Fraud Flag: Admin '{director_name}' / Company '{company.name}' "
+#             f"attempted to link mismatched account '{verified_account_name}'"
+#         )
+#         raise HTTPException(
+#             status_code=400, 
+#             detail=f"Security alert: The bank account name ({verified_account_name}) must match either your registered company name or the admin's name."
+#         )
+
+#     # 6. Save Verified Data
+#     new_account = PaymentAccount(
+#         bank_name=account_in.bank_name,
+#         bank_code=account_in.bank_code,
+#         account_number=account_in.account_number,
+#         account_name=verified_account_name, # Hardcoded to the bank's truth
+#         company_id=current_admin.company_id,
+#         is_verified=True # Instantly verified
+#     )
+    
+#     session.add(new_account)
+#     await session.commit()
+#     await session.refresh(new_account)
+
+#     return APIResponse(
+#         success=True,
+#         message=f"Account linked successfully for {verified_account_name}.",
+#         data=new_account
+#     )
+
+# PATCH -- update /payment-account
 @router.patch("/payment-account", response_model=APIResponse[PaymentAccountResponse])
 async def update_payment_account(
     account_in: PaymentAccountCreate,
