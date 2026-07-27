@@ -22,3 +22,5 @@ python-jose[cryptography]
 python-dotenv>=1.0.1
 pydantic[email]
 resend>=2.0.0
+
+firebase-admin>=6.2.0

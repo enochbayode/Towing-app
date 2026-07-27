@@ -31,6 +31,8 @@ class Driver(SQLModel, table=True):
     is_available: bool = Field(default=True, index=True) # False if currently towing
     current_lat: Optional[float] = None
     current_lng: Optional[float] = None
+
+    fcm_token: Optional[str] = Field(default=None, nullable=True)
     
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

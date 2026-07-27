@@ -47,6 +47,8 @@ class PaymentAccount(SQLModel, table=True):
     account_name: Optional[str] = Field(None, description="Verified name on the bank account")
     is_verified: bool = Field(default=False)
 
+    paystack_subaccount_code: Optional[str] = Field(default=None, index=True)
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 

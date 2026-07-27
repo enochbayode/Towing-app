@@ -35,11 +35,17 @@ class Settings(BaseSettings):
     DOJAH_API_KEY: str
     DOJAH_APP_ID: str
 
+    PREMBLY_SECRET_KEY: str
+
+    GOOGLE_MAPS_API_KEY: str
+
     USER_FEE_PERCENTAGE: float = 0.03
     COMPANY_PAYOUT_PERCENTAGE: float = 0.90
     PLATFORM_CUT_PERCENTAGE: float = 0.10
 
     PAYSTACK_SECRET_KEY: str
+
+    MAX_COMMISSION_DEBT_ALLOWED: float = -10000.00  # Default maximum debt allowed for a company in NGN
 
     # --- CORS ---
     # This parses the string in .env into a real Python list

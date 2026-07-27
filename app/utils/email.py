@@ -9,7 +9,7 @@ FROM_EMAIL = settings.RESEND_FROM_EMAIL
 
 logger = logging.getLogger(__name__)
 
-def send_driver_invite_email(
+async def send_driver_invite_email(
     driver_email: str, 
     driver_name: str, 
     temp_password: str, 
@@ -88,7 +88,7 @@ The SoulsDrive Team
         logger.error(f"EMAIL ERROR: Failed to send driver invite to {driver_email}: {str(e)}")
 
 
-def send_company_status_email(email: str, company_name: str, status: str) -> None:
+async def send_company_status_email(email: str, company_name: str, status: str) -> None:
     """
     Sends lifecycle emails for company registration.
     status options: 'received', 'verified', 'manual_review'

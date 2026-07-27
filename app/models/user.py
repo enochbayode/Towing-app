@@ -1,9 +1,13 @@
+from enum import Enum
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import Field, SQLModel
+from sqlalchemy import Column, Enum as SQLEnum
 
-
+class PaymentMethod(str, Enum):
+    CASH = "CASH"
+    CARD = "CARD"
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
@@ -19,6 +23,15 @@ class User(SQLModel, table=True):
     is_verified: bool = Field(default=False)
     otp_code: Optional[str] = Field(default=None)
     otp_expires_at: Optional[datetime] = Field(default=None)
+
+    # NEW FIELD: Default to CASH for all users upon signup
+    default_payment_method: PaymentMethod = Field(
+        sa_column=Column(
+            SQLEnum(PaymentMethod), 
+            default=PaymentMethod.CASH, 
+            nullable=False
+        )
+    )
     
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

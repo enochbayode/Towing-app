@@ -97,7 +97,7 @@ async def invite_driver(
     invite_link = f"{FRONTEND_URL}/driver/accept-invite?email={driver.email}"
     
     try:
-        send_driver_invite_email(
+        await send_driver_invite_email(
             driver_email=driver.email,
             driver_name=driver.full_name,
             temp_password=temp_password,
