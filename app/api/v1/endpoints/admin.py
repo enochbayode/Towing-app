@@ -96,6 +96,10 @@ async def invite_driver(
     # 5. Generate the Invite Link and Send the Email
     invite_link = f"{FRONTEND_URL}/driver/accept-invite?email={driver.email}"
     
+    print ("==================")
+    print ("temp_password: ", temp_password)
+    print ("==================")
+
     try:
         await send_driver_invite_email(
             driver_email=driver.email,

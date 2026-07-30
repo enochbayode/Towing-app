@@ -9,7 +9,7 @@ from app.core import security
 from app.api.deps import get_current_driver
 from app.models.driver import Driver
 from app.schemas.user import APIResponse, LoginRequest, ChangePasswordRequest
-from app.schemas.driver import DriverInviteAction, DriverResponse, DriverTokenData
+from app.schemas.driver import DriverInviteAction, DriverResponse, DriverTokenData, DriverProfileUpdate
 
 router = APIRouter()
 
@@ -195,4 +195,43 @@ async def change_driver_password(
         success=True,
         message="Your password has been changed successfully.",
         data=None
+    )
+
+@router.patch("/profile", response_model=APIResponse)
+async def update_driver_profile(
+    payload: DriverProfileUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_driver: Driver = Depends(get_current_driver)
+):
+    """
+    Updates the authenticated driver's profile information.
+    Excludes sensitive fields like passwords and emails.
+    """
+    # 1. Extract ONLY the fields the client sent in the request
+    update_data = payload.model_dump(exclude_unset=True)
+
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="No valid fields provided for update."
+        )
+
+    # 2. Iterate through the dictionary and update the SQLModel instance
+    for key, value in update_data.items():
+        setattr(current_driver, key, value)
+
+    # 3. Save to database
+    session.add(current_driver)
+    await session.commit()
+    await session.refresh(current_driver)
+
+    return APIResponse(
+        success=True,
+        message="Profile updated successfully.",
+        data={
+            "id": str(current_driver.id),
+            "full_name": current_driver.full_name,
+            "phone_number": current_driver.phone_number,
+            "email": current_driver.email, # Safe to return, just not safe to edit here
+        }
     )

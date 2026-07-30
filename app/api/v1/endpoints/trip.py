@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
+from sqlalchemy import func
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -166,6 +167,20 @@ async def confirm_and_request_trip(
         )
 
 
+async def get_company_ledger_balance(session: AsyncSession, company_id: UUID) -> Decimal:
+    """
+    Sums all entries (positive and negative) in the company's ledger.
+    Returns 0.00 if the company has no ledger entries yet.
+    """
+    statement = select(func.coalesce(func.sum(CompanyLedger.amount), 0)).where(
+        CompanyLedger.company_id == company_id
+    )
+    result = await session.execute(statement)
+    balance = result.scalar_one()
+    
+    return Decimal(str(balance))
+
+
 # ==========================================
 # 2. DRIVER DISPATCH & ACCEPTANCE
 # ==========================================
@@ -273,7 +288,7 @@ async def execute_trip_completion(trip_id: UUID, session: AsyncSession) -> bool:
         trip.payment_status = PaymentStatus.PAID
 
     trip.status = TripStatus.COMPLETED
-    trip.completed_at = datetime.now(timezone.utc)
+    trip.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     
     session.add(trip)
     await session.commit()
@@ -320,7 +335,7 @@ async def driver_arrive_at_destination(
         raise HTTPException(status_code=403, detail="Unauthorized access to this trip.")
 
     trip.status = TripStatus.ARRIVED
-    trip.arrived_at = datetime.now(timezone.utc)
+    trip.arrived_at = datetime.now(timezone.utc).replace(tzinfo=None)
     
     session.add(trip)
     await session.commit()

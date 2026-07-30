@@ -20,6 +20,7 @@ class DriverResponse(BaseModel):
 class DriverInviteAction(BaseModel):
     email: EmailStr
     temp_password: str
+    new_password: Optional[str] = None  # needed for claiming the account
     action: str = Field(..., description="Must be 'accept' or 'decline'")
 
     @model_validator(mode='after')
@@ -36,3 +37,9 @@ class DriverTokenData(BaseModel):
     access_token: str
     token_type: str = "bearer"
     driver: DriverResponse
+
+class DriverProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(default=None, min_length=2)
+    phone_number: Optional[str] = Field(default=None, min_length=10)
+    # You can add any other safe-to-edit fields your Driver model has here
+    # (e.g., home_address, profile_picture_url)

@@ -32,7 +32,7 @@ class Driver(SQLModel, table=True):
     current_lat: Optional[float] = None
     current_lng: Optional[float] = None
 
-    fcm_token: Optional[str] = Field(default=None, nullable=True)
+    fcm_token: Optional[str] = Field(default=None, nullable=True) # For push notifications to the driver's device
     
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

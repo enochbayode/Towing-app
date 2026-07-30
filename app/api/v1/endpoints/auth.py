@@ -134,6 +134,7 @@ async def verify_user_otp(
     await session.commit()
     await session.refresh(user)
 
+
     # 6. Format and return response
     user_data = UserResponse(
         id=str(user.id),
@@ -187,6 +188,9 @@ async def resend_user_otp(
     
     session.add(user)
     await session.commit()
+
+    print ("====OTP==========")
+    print (f"Generated OTP for user: {secure_otp}")
 
     print(f"--- ENDPOINT CHECK ---")
     print(f"SETTINGS KEY IN API: '{settings.RESEND_API_KEY}'")
