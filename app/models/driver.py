@@ -21,9 +21,13 @@ class Driver(SQLModel, table=True):
     # Driver Specific Status
     # status can be: "pending" (awaiting admin approval), "accepted", "suspended"
     status: str = Field(default="pending") 
+
+    # Optional Foreign Key linking to the Vehicle (Nullable because a driver might not have a truck assigned yet)
+    current_vehicle_id: Optional[uuid.UUID] = Field(default=None, index=True)
     
     # OTP & Verification
     is_verified: bool = Field(default=False)
+    is_active: bool = Field(default=True)
     otp_code: Optional[str] = Field(default=None)
     otp_expires_at: Optional[datetime] = Field(default=None)
 

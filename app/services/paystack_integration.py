@@ -141,3 +141,56 @@ async def create_paystack_subaccount(
     except Exception as e:
         logger.error(f"Failed to connect to Paystack Subaccount API: {str(e)}")
         return None
+
+
+# This function is used to initialize a debt settlement transaction for a fleet company to pay off their commission debt. 
+# The money goes directly to the platform's main account.
+async def initialize_debt_settlement(
+    email: str, 
+    amount_ngn: float, 
+    company_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Initializes a standard Paystack transaction for a fleet to pay off their commission debt.
+    The money goes directly to the platform's main account.
+    """
+    url = "https://api.paystack.co/transaction/initialize"
+    
+    headers = {
+        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # Paystack requires the amount in Kobo
+    amount_kobo = int(amount_ngn * 100)
+    
+    # Generate a unique reference prefix to easily identify it in the webhook
+    unique_reference = f"settlement_{company_id}_{int(datetime.now(timezone.utc).timestamp())}"
+    
+    payload = {
+        "email": email,
+        "amount": str(amount_kobo),
+        "reference": unique_reference,
+        "metadata": {
+            "transaction_type": "DEBT_SETTLEMENT",
+            "company_id": str(company_id)
+        }
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=10.0)
+            
+            if response.status_code == 200:
+                data = response.json()["data"]
+                return {
+                    "authorization_url": data["authorization_url"],
+                    "reference": data["reference"]
+                }
+            else:
+                logger.error(f"Paystack Settlement Init Error: {response.text}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Failed to connect to Paystack: {str(e)}")
+        return None

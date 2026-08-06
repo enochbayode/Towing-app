@@ -4,14 +4,15 @@ from uuid import UUID
 from datetime import datetime
 
 # Import the Enum from our newly created model
-from app.models.vehicle import TowTruckType
+from app.models.vehicle import TowTruckType 
+from app.schemas.driver import DriverResponse
 
 class VehicleBase(BaseModel):
     make: str = Field(..., description="e.g., Ford, Isuzu")
     model: str = Field(..., description="e.g., F-450, NQR")
     year: int = Field(..., ge=1990, le=2030, description="Year of manufacture")
     license_plate: str = Field(..., description="Unique license plate number")
-    vehicle_type: TowTruckType = Field(..., description="Type of tow truck (flatbed, wheel_lift, etc.)")
+    vehicle_type: Optional[str] = Field(..., description="Type of tow truck (flatbed, wheel_lift, etc.)")
     capacity_tons: Optional[float] = Field(default=None, description="Towing capacity in tons")
 
 class VehicleCreate(VehicleBase):
@@ -34,9 +35,17 @@ class VehicleResponse(VehicleBase):
     """Response returned to the frontend"""
     id: UUID
     company_id: UUID
-    driver_id: Optional[UUID] = None
+    driver: Optional[DriverResponse] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+# class VehicleTrackingInfo(BaseModel):
+#     id: str
+#     company_id: str
+#     driver_id: Optional[str] = None
+#     is_active: bool
+
+#     model_config = ConfigDict(from_attributes=True)

@@ -43,6 +43,24 @@ class CompanyResponse(CompanyBase):
     
     model_config = ConfigDict(from_attributes=True)
 
+# class CompanyTrackingInfo(BaseModel):
+#     id: UUID
+#     name: str
+#     office_address: str
+#     rc_number: str
+#     email: Optional[EmailStr] = None
+#     phone_number: Optional[str] = None
+#     is_vetted: bool
+#     is_active: bool = True
+    # bank_name: Optional[str] = None
+    # bank_code: Optional[str] = None
+    # account_number: Optional[str] = Field(None, min_length=10, max_length=10)
+    # account_name: Optional[str] = None
+    # created_at: Optional[datetime] = None
+    # updated_at: Optional[datetime] = None
+
+    # model_config = ConfigDict(from_attributes=True)
+
 
 # ==========================================
 # PAYMENT ACCOUNT SCHEMAS

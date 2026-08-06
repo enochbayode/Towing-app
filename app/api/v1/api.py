@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, admin, driver, company, trip, webhook
+from app.api.v1.endpoints import auth, admin, driver, company, trip, webhook, vehicle
 
 api_router = APIRouter()
 
@@ -40,6 +40,13 @@ api_router.include_router(
     prefix="/trip",
     tags=["Trip endpoints"]
 )
+
+# vehicle endpoints
+# api_router.include_router(
+#     vehicle.router,
+#     prefix="/vehicle",
+#     tags=["Comapany's vehicle endpoints"]
+# )
 
 # Webhook routes (no prefix, as these are called by external services)
 api_router.include_router(

@@ -9,20 +9,8 @@ from decimal import Decimal
 from app.models.trip import TripStatus, TransactionType
 
 # ==========================================
-# TRIP SCHEMAS
+# ENUMS (Local to Trip)
 # ==========================================
-
-class TripBase(BaseModel):
-    pickup_address: str = Field(..., description="The formatted address of the broken-down vehicle")
-    pickup_lat: float = Field(..., description="Latitude of pickup location")
-    pickup_lng: float = Field(..., description="Longitude of pickup location")
-    
-    dropoff_address: str = Field(..., description="The formatted destination address")
-    dropoff_lat: float = Field(..., description="Latitude of dropoff location")
-    dropoff_lng: float = Field(..., description="Longitude of dropoff location")
-    
-    vehicle_details: str = Field(..., description="e.g., '2018 Toyota Camry, Black, License Plate XYZ123'") 
-
 class VehicleType(str, enum.Enum):
     SEDAN = "sedan"
     SUV = "suv"
@@ -33,6 +21,21 @@ class TowTruckType(str, enum.Enum):
     FLATBED = "flatbed"
     WHEEL_LIFT = "wheel_lift" # Also known as chained/wrecker
     HEAVY_DUTY = "heavy_duty"
+
+
+# ==========================================
+# TRIP SCHEMAS
+# ==========================================
+class TripBase(BaseModel):
+    pickup_address: str = Field(..., description="The formatted address of the broken-down vehicle")
+    pickup_lat: float = Field(..., description="Latitude of pickup location")
+    pickup_lng: float = Field(..., description="Longitude of pickup location")
+    
+    dropoff_address: str = Field(..., description="The formatted destination address")
+    dropoff_lat: float = Field(..., description="Latitude of dropoff location")
+    dropoff_lng: float = Field(..., description="Longitude of dropoff location")
+    
+    vehicle_details: str = Field(..., description="e.g., '2018 Toyota Camry, Black, License Plate XYZ123'") 
 
 class TripCreateSchema(TripBase):
     """
@@ -79,11 +82,42 @@ class TripResponse(TripBase):
 
 
 # ==========================================
+# TRACKING SCHEMAS (Bolt/Uber Style)
+# ==========================================
+class DriverTrackingInfo(BaseModel):
+    """Exactly what the customer sees to identify/contact the driver."""
+    full_name: str
+    phone_number: Optional[str] = None
+
+class CompanyTrackingInfo(BaseModel):
+    """Just the name of the fleet fulfilling the trip."""
+    name: str
+
+class VehicleTrackingInfo(BaseModel):
+    """Exactly what the customer needs to spot the truck."""
+    make: str
+    model: str
+    license_plate: str
+    vehicle_type: str 
+
+class TripTrackingResponse(BaseModel):
+    """The lean tracking payload for the frontend."""
+    trip_id: str
+    status: str
+    total_cost: Decimal
+    
+    driver: Optional[DriverTrackingInfo] = None
+    company: Optional[CompanyTrackingInfo] = None
+    vehicle: Optional[VehicleTrackingInfo] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ==========================================
 # TRANSACTION SCHEMAS
 # ==========================================
 # Note: Users/Admins don't CREATE transactions directly via endpoints (the system does), 
 # so we only need a Response schema for their dashboard ledger.
-
 class TransactionResponse(BaseModel):
     id: UUID
     trip_id: UUID

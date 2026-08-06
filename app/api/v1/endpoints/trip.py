@@ -27,6 +27,9 @@ from app.models.user import User
 from app.models.driver import Driver
 from app.models.company import Company
 from app.services.paystack_integration import initialize_paystack_transaction
+from app.models.vehicle import Vehicle
+from app.schemas.trip import TripTrackingResponse, DriverTrackingInfo, CompanyTrackingInfo, VehicleTrackingInfo
+
 
 from app.services.pricing_engine import calculate_tow_cost
 from app.core.config import settings
@@ -93,7 +96,7 @@ async def get_trip_estimate(
         }
     )
 
-
+# ----confirmation endpoint is below, after the WebSocket and location update endpoints
 @router.post("/confirm", response_model=APIResponse)
 async def confirm_and_request_trip(
     payload: TripConfirmSchema,
@@ -166,7 +169,7 @@ async def confirm_and_request_trip(
             }
         )
 
-
+# ----company ledger balance check for debt enforcement
 async def get_company_ledger_balance(session: AsyncSession, company_id: UUID) -> Decimal:
     """
     Sums all entries (positive and negative) in the company's ledger.
@@ -201,10 +204,18 @@ async def accept_trip(
             detail="You must be assigned to a registered fleet to accept trips."
         )
 
+    # 1. NEW: Fail-Fast Vehicle Check
+    if not current_driver.current_vehicle_id:
+        raise HTTPException(
+            status_code=403, 
+            detail="You cannot accept a trip without an assigned vehicle. Please select a vehicle from the fleet first."
+        )
+
     # --- THE DEBT ENFORCER ---
     current_balance = await get_company_ledger_balance(session, current_driver.company_id)
     
-    if current_balance <= MAX_COMMISSION_DEBT_ALLOWED:
+    # if current_balance <= MAX_COMMISSION_DEBT_ALLOWED:
+    if current_balance < 0 and abs(current_balance) >= MAX_COMMISSION_DEBT_ALLOWED:
         # We use abs() to format "-10000" into a readable "10,000 NGN" for the error message
         debt_amount = abs(current_balance)
         raise HTTPException(
@@ -245,7 +256,6 @@ async def accept_trip(
             "pickup_address": trip.pickup_address
         }
     )
-
 
 # ==========================================
 # 3. SETTLEMENT & COMPLETION LOGIC
@@ -295,7 +305,6 @@ async def execute_trip_completion(trip_id: UUID, session: AsyncSession) -> bool:
     logger.info(f"Trip {trip.id} settled ({trip.payment_method.value}). Status updated to COMPLETED.")
     return True
 
-
 # ==========================================
 # 4. BACKGROUND TIMER & ENDPOINTS
 # ==========================================
@@ -313,8 +322,8 @@ async def wait_and_auto_complete_trip(trip_id: UUID, session_factory):
             logger.info(f"Timer expired for Trip {trip_id}. Triggering auto-completion...")
             await execute_trip_completion(trip_id=trip.id, session=session)
 
-
-@router.post("/{trip_id}/arrive", response_model=APIResponse)
+#------driver location tracking and geofence logic is below, followed by arrival confirmation and dispute endpoints
+@router.post("/driver/{trip_id}/arrive", response_model=APIResponse)
 async def driver_arrive_at_destination(
     trip_id: UUID,
     background_tasks: BackgroundTasks,
@@ -349,7 +358,7 @@ async def driver_arrive_at_destination(
         data={"trip_id": str(trip.id), "status": trip.status, "arrived_at": trip.arrived_at}
     )
 
-
+# -------- confirm and complete trip endpoints are below, followed by dispute and tracking info endpoints
 @router.post("/{trip_id}/confirm-completion", response_model=APIResponse)
 async def user_confirm_completion(
     trip_id: UUID,
@@ -379,7 +388,7 @@ async def user_confirm_completion(
         data={"trip_id": str(trip.id), "status": TripStatus.COMPLETED}
     )
 
-
+# -----dispute and tracking info endpoints are below
 @router.post("/{trip_id}/dispute", response_model=APIResponse)
 async def user_dispute_trip(
     trip_id: UUID,
@@ -407,4 +416,64 @@ async def user_dispute_trip(
         success=True,
         message="Dispute registered. Our support team will review this trip.",
         data={"trip_id": str(trip.id), "status": trip.status}
+    )
+
+# -----tracking info endpoint is below
+@router.get("/{trip_id}/tracking-info", response_model=APIResponse)
+async def get_trip_tracking_info(
+    trip_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns a lean payload of the assigned driver, tow truck, and company.
+    Designed for the customer app UI (similar to Uber/Bolt).
+    """
+    trip = await session.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found.")
+        
+    if trip.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to track this trip.")
+
+    if not trip.driver_id or not trip.company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No driver has been assigned to this trip yet."
+        )
+
+    driver = await session.get(Driver, trip.driver_id)
+    company = await session.get(Company, trip.company_id)
+    
+    vehicle = None
+    if driver and driver.current_vehicle_id:
+        vehicle = await session.get(Vehicle, driver.current_vehicle_id)
+
+    # Construct the ultra-lean response
+    tracking_data = TripTrackingResponse(
+        trip_id=str(trip.id), 
+        status=trip.status.value if hasattr(trip.status, "value") else trip.status,
+        total_cost=trip.total_cost,
+
+        driver=DriverTrackingInfo(
+            full_name=driver.full_name,
+            phone_number=driver.phone_number,
+        ) if driver else None,
+
+        company=CompanyTrackingInfo(
+            name=company.name,
+        ) if company else None,
+        
+        vehicle=VehicleTrackingInfo(
+            make=vehicle.make,
+            model=vehicle.model,
+            license_plate=vehicle.license_plate,
+            vehicle_type=vehicle.vehicle_type.value if hasattr(vehicle.vehicle_type, "value") else vehicle.vehicle_type,  
+        ) if vehicle else None
+    )
+
+    return APIResponse(
+        success=True,
+        message="Tracking information retrieved successfully.",
+        data=tracking_data.model_dump()
     )

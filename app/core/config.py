@@ -45,7 +45,9 @@ class Settings(BaseSettings):
 
     PAYSTACK_SECRET_KEY: str
 
-    MAX_COMMISSION_DEBT_ALLOWED: float = -10000.00  # Default maximum debt allowed for a company in NGN
+    MAX_COMMISSION_DEBT_ALLOWED: float = 15000.00  # Default maximum debt allowed for a company in NGN
+
+    # MAX_COMMISSION_DEBT: float = 15000.00
 
     # --- CORS ---
     # This parses the string in .env into a real Python list

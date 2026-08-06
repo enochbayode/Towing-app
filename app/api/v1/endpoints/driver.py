@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
@@ -8,6 +9,7 @@ from app.db.session import get_session
 from app.core import security
 from app.api.deps import get_current_driver
 from app.models.driver import Driver
+from app.models.vehicle import Vehicle
 from app.schemas.user import APIResponse, LoginRequest, ChangePasswordRequest
 from app.schemas.driver import DriverInviteAction, DriverResponse, DriverTokenData, DriverProfileUpdate
 
@@ -150,7 +152,8 @@ async def get_driver_me(
         email=current_driver.email,
         phone_number=current_driver.phone_number,
         status=current_driver.status,
-        is_verified=current_driver.is_verified
+        is_verified=current_driver.is_verified,
+        current_vehicle_id=str(current_driver.current_vehicle_id) if current_driver.current_vehicle_id else None
     )
 
     return APIResponse(
@@ -158,7 +161,6 @@ async def get_driver_me(
         message="Driver profile retrieved successfully.",
         data=driver_data
     )
-
 
 # --- 4. CHANGE DRIVER PASSWORD ---
 @router.post("/auth/change-password", response_model=APIResponse[None])
@@ -197,6 +199,7 @@ async def change_driver_password(
         data=None
     )
 
+# --- 5. DRIVER PROFILE MANAGEMENT ---
 @router.patch("/profile", response_model=APIResponse)
 async def update_driver_profile(
     payload: DriverProfileUpdate,
@@ -234,4 +237,110 @@ async def update_driver_profile(
             "phone_number": current_driver.phone_number,
             "email": current_driver.email, # Safe to return, just not safe to edit here
         }
+    )
+
+# --- 6. DRIVER VEHICLE MANAGEMENT ---
+@router.get("/fleet/vehicles", response_model=APIResponse)
+async def get_fleet_vehicles(
+    session: AsyncSession = Depends(get_session),
+    current_driver: Driver = Depends(get_current_driver)
+):
+    """
+    Returns all active vehicles in the driver's company.
+    The frontend can use `driver_id` to show if a truck is 'Available' or 'In Use'.
+    """
+    statement = select(Vehicle).where(
+        Vehicle.company_id == current_driver.company_id,
+        Vehicle.is_active == True
+    )
+    result = await session.execute(statement)
+    vehicles = result.scalars().all()
+
+    return APIResponse(
+        success=True,
+        message="Fleet vehicles retrieved successfully.",
+        data=vehicles
+    )
+
+# --- 7. DRIVER VEHICLE SELECTION ---
+@router.post("/vehicles/{vehicle_id}/select", response_model=APIResponse)
+async def select_vehicle(
+    vehicle_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_driver: Driver = Depends(get_current_driver)
+):
+    """
+    Assigns the driver to a vehicle for their shift.
+    Automatically releases their previously assigned vehicle if they are switching.
+    """
+    # 1. Fetch the requested vehicle
+    vehicle = await session.get(Vehicle, vehicle_id)
+    
+    if not vehicle or vehicle.company_id != current_driver.company_id:
+        raise HTTPException(status_code=404, detail="Vehicle not found in your fleet.")
+        
+    if not vehicle.is_active:
+        raise HTTPException(status_code=400, detail="This vehicle is marked as inactive/in maintenance.")
+
+    # 2. Conflict Resolution: Is someone else already driving it?
+    if vehicle.driver_id and vehicle.driver_id != current_driver.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, 
+            detail="This vehicle is currently occupied by another driver."
+        )
+
+    # 3. Release the driver's OLD vehicle (if they are switching trucks)
+    if current_driver.current_vehicle_id and current_driver.current_vehicle_id != vehicle_id:
+        old_vehicle = await session.get(Vehicle, current_driver.current_vehicle_id)
+        if old_vehicle:
+            old_vehicle.driver_id = None
+            session.add(old_vehicle)
+
+    # 4. Secure the NEW vehicle (Sync both tables)
+    vehicle.driver_id = current_driver.id
+    current_driver.current_vehicle_id = vehicle.id
+    
+    session.add(vehicle)
+    session.add(current_driver)
+    await session.commit()
+
+    return APIResponse(
+        success=True,
+        message=f"You are now driving the {vehicle.make} {vehicle.model} ({vehicle.license_plate}).",
+        data={"vehicle_id": str(vehicle.id)}
+    )
+
+# --- 8. DRIVER VEHICLE RELEASE ---
+@router.post("/vehicles/release", response_model=APIResponse)
+async def release_current_vehicle(
+    session: AsyncSession = Depends(get_session),
+    current_driver: Driver = Depends(get_current_driver)
+):
+    """
+    Frees the driver's current vehicle at the end of their shift.
+    """
+    if not current_driver.current_vehicle_id:
+        return APIResponse(
+            success=True,
+            message="You are not currently assigned to any vehicle.",
+            data=None
+        )
+
+    # 1. Fetch the vehicle they are currently holding
+    vehicle = await session.get(Vehicle, current_driver.current_vehicle_id)
+    
+    # 2. Break the link on both sides
+    if vehicle:
+        vehicle.driver_id = None
+        session.add(vehicle)
+        
+    current_driver.current_vehicle_id = None
+    session.add(current_driver)
+    
+    await session.commit()
+
+    return APIResponse(
+        success=True,
+        message="Vehicle released successfully. Shift ended.",
+        data=None
     )

@@ -39,8 +39,8 @@ class Vehicle(SQLModel, table=True):
     is_active: bool = Field(default=True, description="False if the truck is in the mechanic shop")
     
     # Timestamps
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     # Note: If you want fully resolved objects via ORM, add these later:
     company: Optional["Company"] = Relationship(back_populates="vehicles")

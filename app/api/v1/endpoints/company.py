@@ -2,8 +2,12 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 from sqlmodel import select
 from typing import Any
+from decimal import Decimal
+from uuid import UUID
+from sqlalchemy.exc import IntegrityError
 
 from app.schemas.company import (
     CompanyCreate, 
@@ -13,6 +17,10 @@ from app.schemas.company import (
     CompanyUpdate
 )
 
+from app.models.driver import Driver
+from app.models.vehicle import Vehicle
+from app.models.trip import Trip, TripStatus
+from app.utils.financials import get_company_ledger_balance
 from app.models.company import Company, PaymentAccount
 from app.services.paystack_integration import resolve_account_name 
 from app.models.admin import Admin
@@ -20,7 +28,9 @@ from app.db.session import get_session
 from app.api.deps import get_current_admin
 from app.utils.background_tasks import process_company_verification
 from app.schemas.user import APIResponse
-from app.services.paystack_integration import create_paystack_subaccount
+from app.schemas.driver import DriverStatusUpdate
+from app.schemas.vehicle import VehicleCreate, VehicleUpdate
+from app.services.paystack_integration import create_paystack_subaccount, initialize_debt_settlement
 
 
 router = APIRouter()
@@ -148,7 +158,6 @@ async def update_my_company(
         message="Company profile updated successfully.",
         data=company
     )
-
 
 @router.post("/payment-account", response_model=APIResponse[PaymentAccountResponse])
 async def add_payment_account(
@@ -280,4 +289,330 @@ async def update_payment_account(
         success=True,
         message=f"Payment account successfully updated to {verified_account_name}.",
         data=existing_account
+    )
+
+# Dashboard metrics for the company
+@router.get("/dashboard", response_model=APIResponse)
+async def get_company_dashboard(
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Returns the core metrics for the company dashboard:
+    Total earnings, commission debt, completed trips, and active assets.
+    """
+    company_id = current_admin.company_id
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Register a company profile first.")
+
+    # 1. Calculate Current Commission Debt (or Balance)
+    current_balance = await get_company_ledger_balance(session, company_id)
+    
+    # 2. Calculate Total Lifetime Earnings (Sum of company_payout for COMPLETED trips)
+    earnings_statement = select(func.coalesce(func.sum(Trip.company_payout), 0)).where(
+        Trip.company_id == company_id,
+        Trip.status == TripStatus.COMPLETED
+    )
+    earnings_result = await session.execute(earnings_statement)
+    total_earnings = Decimal(str(earnings_result.scalar_one()))
+
+    # 3. Count Total Completed Trips
+    trips_statement = select(func.count(Trip.id)).where(
+        Trip.company_id == company_id,
+        Trip.status == TripStatus.COMPLETED
+    )
+    trips_result = await session.execute(trips_statement)
+    total_trips = trips_result.scalar_one()
+
+    # 4. Count Active Drivers
+    drivers_statement = select(func.count(Driver.id)).where(
+        Driver.company_id == company_id,
+        Driver.is_active == True
+    )
+    drivers_result = await session.execute(drivers_statement)
+    active_drivers = drivers_result.scalar_one()
+
+    # 5. Count Active Vehicles
+    vehicles_statement = select(func.count(Vehicle.id)).where(
+        Vehicle.company_id == company_id,
+        Vehicle.is_active == True
+    )
+    vehicles_result = await session.execute(vehicles_statement)
+    active_vehicles = vehicles_result.scalar_one()
+
+    return APIResponse(
+        success=True,
+        message="Dashboard metrics retrieved successfully.",
+        data={
+            "financials": {
+                "total_earnings_ngn": float(total_earnings),
+                "current_ledger_balance_ngn": float(current_balance),
+                "is_suspended": current_balance <= Decimal("-10000.00") # Tied to your debt enforcer limit!
+            },
+            "operations": {
+                "total_completed_trips": total_trips,
+                "active_drivers_count": active_drivers,
+                "active_vehicles_count": active_vehicles
+            }
+        }
+    )
+
+# debt settlement endpoint
+@router.post("/settle-debt", response_model=APIResponse)
+async def settle_company_debt(
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Checks the company's ledger and initializes a Paystack checkout 
+    if they have a negative balance.
+    """
+    company_id = current_admin.company_id
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Register a company profile first.")
+
+    # 1. Get the current ledger balance
+    current_balance = await get_company_ledger_balance(session, company_id)
+
+    # 2. Prevent them from paying if they don't owe anything
+    if current_balance >= Decimal("0.00"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Your company currently has no outstanding commission debt."
+        )
+
+    # 3. The balance is negative, so convert it to a positive absolute amount for checkout
+    amount_to_pay = abs(float(current_balance))
+
+    # 4. Initialize Paystack
+    paystack_data = await initialize_debt_settlement(
+        email=current_admin.email, # Ensure Admin model has an email field, or fetch company email
+        amount_ngn=amount_to_pay,
+        company_id=str(company_id)
+    )
+
+    if not paystack_data:
+        raise HTTPException(
+            status_code=502, 
+            detail="Failed to connect to the payment gateway. Try again later."
+        )
+
+    return APIResponse(
+        success=True,
+        message="Payment initialized successfully.",
+        data={
+            "authorization_url": paystack_data["authorization_url"],
+            "reference": paystack_data["reference"],
+            "amount_ngn": amount_to_pay
+        }
+    )
+
+# get all drivers in the company
+@router.get("/drivers", response_model=APIResponse)
+async def get_company_drivers(
+    skip: int = 0,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """Returns a paginated list of all drivers in the company's fleet."""
+    company_id = current_admin.company_id
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Register a company profile first.")
+
+    # Fetch drivers belonging to this company, newest first
+    statement = select(Driver).where(
+        Driver.company_id == company_id
+    ).order_by(Driver.created_at.desc()).offset(skip).limit(limit)
+    
+    result = await session.execute(statement)
+    drivers = result.scalars().all()
+
+    return APIResponse(
+        success=True,
+        message="Drivers retrieved successfully.",
+        data=drivers
+    )
+
+# Admin can activate or deactivate a driver in their fleet
+@router.patch("/drivers/{driver_id}/status", response_model=APIResponse)
+async def update_driver_status(
+    driver_id: UUID,
+    payload: DriverStatusUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Activates or deactivates a driver. 
+    A deactivated driver cannot accept new trip dispatches.
+    """
+    company_id = current_admin.company_id
+    
+    # Ensure the driver actually belongs to this specific fleet
+    statement = select(Driver).where(
+        Driver.id == driver_id, 
+        Driver.company_id == company_id
+    )
+    result = await session.execute(statement)
+    driver = result.scalar_one_or_none()
+
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found in your fleet.")
+
+    driver.is_active = payload.is_active
+    session.add(driver)
+    await session.commit()
+    await session.refresh(driver)
+
+    status_msg = "activated" if driver.is_active else "deactivated"
+    
+    return APIResponse(
+        success=True,
+        message=f"Driver has been successfully {status_msg}.",
+        data={"driver_id": str(driver.id), "is_active": driver.is_active}
+    )
+
+# Admin can view all trips associated with their company
+@router.get("/trips", response_model=APIResponse)
+async def get_company_trips(
+    skip: int = 0,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Returns a paginated list of the company's dispatch history.
+    """
+    company_id = current_admin.company_id
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Register a company profile first.")
+
+    statement = select(Trip).where(
+        Trip.company_id == company_id
+    ).order_by(Trip.created_at.desc()).offset(skip).limit(limit)
+    
+    result = await session.execute(statement)
+    trips = result.scalars().all()
+
+    return APIResponse(
+        success=True,
+        message="Trip history retrieved successfully.",
+        data=trips
+    )
+
+
+#===========Company Vehicle Management Endpoints===========
+
+@router.post("/add-vehicle", response_model=APIResponse)
+async def add_vehicle(
+    payload: VehicleCreate,
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """Adds a new tow truck to the company's fleet."""
+    if not current_admin.company_id:
+        raise HTTPException(status_code=400, detail="Register a company profile first.")
+
+    # Check for duplicate license plates
+    statement = select(Vehicle).where(Vehicle.license_plate == payload.license_plate)
+    result = await session.execute(statement)
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="A vehicle with this license plate already exists.")
+
+    new_vehicle = Vehicle(
+        **payload.model_dump(),
+        company_id=current_admin.company_id,
+        is_active=True
+    )
+    
+    session.add(new_vehicle)
+    await session.commit()
+    await session.refresh(new_vehicle)
+
+    return APIResponse(success=True, message="Vehicle added successfully.", data=new_vehicle)
+
+
+@router.patch("/{vehicle_id}", response_model=APIResponse)
+async def update_vehicle(
+    vehicle_id: UUID,
+    payload: VehicleUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """Edits an existing vehicle's details."""
+    statement = select(Vehicle).where(
+        Vehicle.id == vehicle_id, 
+        Vehicle.company_id == current_admin.company_id
+    )
+    result = await session.execute(statement)
+    vehicle = result.scalar_one_or_none()
+
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found.")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(vehicle, key, value)
+
+    session.add(vehicle)
+    await session.commit()
+    await session.refresh(vehicle)
+
+    return APIResponse(
+        success=True, 
+        message="Vehicle updated successfully.", 
+        data=vehicle
+    )
+
+
+# Delete Vehicle Endpoint
+@router.delete("/{vehicle_id}", response_model=APIResponse)
+async def delete_vehicle(
+    vehicle_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Permanently deletes a vehicle from the company's fleet.
+    Will fail if the vehicle is already associated with historical trips.
+    """
+    if not current_admin.company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Register a company profile first."
+        )
+
+    # 1. Verify the vehicle exists and belongs to this company
+    statement = select(Vehicle).where(
+        Vehicle.id == vehicle_id, 
+        Vehicle.company_id == current_admin.company_id
+    )
+    result = await session.execute(statement)
+    vehicle = result.scalar_one_or_none()
+
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Vehicle not found."
+        )
+
+    # 2. Attempt the Hard Delete
+    try:
+        await session.delete(vehicle)
+        await session.commit()
+    except IntegrityError:
+        # If it fails, rollback the transaction to prevent database locking
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Cannot delete this vehicle because it has already been used for dispatch trips. "
+                "Please use the update endpoint to set 'is_active' to false instead."
+            )
+        )
+
+    return APIResponse(
+        success=True, 
+        message="Vehicle deleted successfully.", 
+        data=None
     )

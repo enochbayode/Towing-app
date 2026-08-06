@@ -16,6 +16,7 @@ class DriverResponse(BaseModel):
     phone_number: Optional[str]
     status: str
     is_verified: bool
+    current_vehicle_id: Optional[str] = None
 
 class DriverInviteAction(BaseModel):
     email: EmailStr
@@ -43,3 +44,18 @@ class DriverProfileUpdate(BaseModel):
     phone_number: Optional[str] = Field(default=None, min_length=10)
     # You can add any other safe-to-edit fields your Driver model has here
     # (e.g., home_address, profile_picture_url)
+
+# class DriverTrackingInfo(BaseModel): 
+#     id: str
+#     full_name: str
+#     email: EmailStr
+#     phone_number: Optional[str]
+#     status: str
+#     is_verified: bool
+#     is_online: bool
+#     is_available: bool
+#     current_lat: Optional[float]
+#     current_lng: Optional[float]
+
+#     current_lat: Optional[float] = None
+#     current_lng: Optional[float] = None
