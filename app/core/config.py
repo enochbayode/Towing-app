@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     DOJAH_API_KEY: str
     DOJAH_APP_ID: str
 
-    PREMBLY_SECRET_KEY: str
+    PREMBLY_SECRET_KEY: str = "dummmyyyyyyyyyyyyyyyyyy"
 
-    GOOGLE_MAPS_API_KEY: str
+    GOOGLE_MAPS_API_KEY: str = "dummmyyyyyyyyyyyyyyyyyy"
 
     USER_FEE_PERCENTAGE: float = 0.03
     COMPANY_PAYOUT_PERCENTAGE: float = 0.90
