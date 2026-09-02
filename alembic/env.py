@@ -18,6 +18,11 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+from app.models.company import Company
+from app.models.courier_driver import CourierDriver
+from app.models.courier_vehicle import CourierVehicle
+from app.models.courier import CourierTrip
+
 # 3. Point target_metadata to SQLModel
 target_metadata = SQLModel.metadata
 

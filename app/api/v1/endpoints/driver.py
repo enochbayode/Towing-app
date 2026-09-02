@@ -21,7 +21,7 @@ async def respond_to_invite(
     *,
     session: AsyncSession = Depends(get_session),
     response_in: DriverInviteAction,
-) -> Any:
+) -> APIResponse:
     """
     Process the driver's response to a fleet invitation.
     Uses the temporary password for authentication.
@@ -95,7 +95,7 @@ async def login_driver(
     *,
     session: AsyncSession = Depends(get_session),
     login_in: LoginRequest,
-) -> Any:
+) -> APIResponse:
     """
     Authenticate an active Driver and return a JWT token.
     """
@@ -141,7 +141,7 @@ async def login_driver(
 @router.get("/me", response_model=APIResponse[DriverResponse])
 async def get_driver_me(
     current_driver: Driver = Depends(get_current_driver)
-) -> Any:
+) -> APIResponse:
     """
     Retrieve the profile of the currently logged-in Driver.
     """
@@ -169,7 +169,7 @@ async def change_driver_password(
     session: AsyncSession = Depends(get_session),
     password_in: ChangePasswordRequest,
     current_driver: Driver = Depends(get_current_driver)
-) -> Any:
+) -> APIResponse:
     """
     Allow an authenticated Driver to change their password securely.
     """
@@ -205,7 +205,7 @@ async def update_driver_profile(
     payload: DriverProfileUpdate,
     session: AsyncSession = Depends(get_session),
     current_driver: Driver = Depends(get_current_driver)
-):
+)-> APIResponse:
     """
     Updates the authenticated driver's profile information.
     Excludes sensitive fields like passwords and emails.
@@ -244,7 +244,7 @@ async def update_driver_profile(
 async def get_fleet_vehicles(
     session: AsyncSession = Depends(get_session),
     current_driver: Driver = Depends(get_current_driver)
-):
+)-> APIResponse:
     """
     Returns all active vehicles in the driver's company.
     The frontend can use `driver_id` to show if a truck is 'Available' or 'In Use'.
@@ -268,7 +268,7 @@ async def select_vehicle(
     vehicle_id: UUID,
     session: AsyncSession = Depends(get_session),
     current_driver: Driver = Depends(get_current_driver)
-):
+)-> APIResponse:
     """
     Assigns the driver to a vehicle for their shift.
     Automatically releases their previously assigned vehicle if they are switching.
@@ -315,7 +315,7 @@ async def select_vehicle(
 async def release_current_vehicle(
     session: AsyncSession = Depends(get_session),
     current_driver: Driver = Depends(get_current_driver)
-):
+)-> APIResponse:
     """
     Frees the driver's current vehicle at the end of their shift.
     """

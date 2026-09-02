@@ -1,4 +1,5 @@
 import uuid
+from uuid6 import uuid7
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 from sqlmodel import Field, SQLModel, Relationship
@@ -8,7 +9,7 @@ if TYPE_CHECKING:
 class Admin(SQLModel, table=True):
     __tablename__ = "admins"
     
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     # Foreign Key linking to the Company
     company_id: Optional[uuid.UUID] = Field(default=None, foreign_key="company.id")
     

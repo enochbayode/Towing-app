@@ -1,4 +1,5 @@
 import uuid
+from uuid6 import uuid7
 from datetime import datetime, timezone
 from typing import List, Optional, TYPE_CHECKING
 from sqlmodel import Field, SQLModel, Relationship
@@ -12,7 +13,7 @@ if TYPE_CHECKING:
 class Company(SQLModel, table=True):
     __tablename__ = "company" 
     
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     name: str = Field(nullable=False, description="Registered name of the towing company")
     rc_number: str = Field(unique=True, index=True, description="CAC Registration Number for vetting")
     office_address: str = Field(nullable=False)

@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.db.session import get_session
+from app.models.courier import CourierTrip, CourierStatus
+from app.models.courier import CourierDriverHistory, CourierLedgerEntryType
+from app.models.user import User
+from app.models.driver import Driver
+from app.models.company import Company
+
+from app.db.session import get_session, async_session_factory
 from app.api.deps import get_current_user, get_current_driver
 from app.models.trip import (
     Trip, 
@@ -23,18 +29,24 @@ from app.models.trip import (
     Transaction, 
     TransactionType
 )
-from app.models.user import User
-from app.models.driver import Driver
-from app.models.company import Company
-from app.services.paystack_integration import initialize_paystack_transaction
+
+from app.services.paystack_integration import initialize_paystack_transaction, initialize_courier_transaction
 from app.models.vehicle import Vehicle
+from app.models.courier_driver import get_utc_now_naive
+from app.models.courier_driver import CourierDriver
+from app.models.courier_vehicle import CourierVehicle
+
 from app.schemas.trip import TripTrackingResponse, DriverTrackingInfo, CompanyTrackingInfo, VehicleTrackingInfo
-
-
-from app.services.pricing_engine import calculate_tow_cost
-from app.core.config import settings
+from app.schemas.courier import CourierTripCreate, CourierTripResponse
 from app.schemas.trip import TripCreateSchema, TripConfirmSchema
 from app.schemas.user import APIResponse
+from app.schemas.courier import CourierTripConfirm, PaymentMethod
+from app.services.courier_pricing_engine import calculate_courier_price
+from app.services.pricing_engine import calculate_tow_cost
+from app.utils.courier_dispatch_worker import broadcast_courier_trip_to_drivers
+from app.utils.courier_dispatch_worker import wait_and_auto_complete_courier_trip
+from app.core.config import settings
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -51,7 +63,7 @@ async def get_trip_estimate(
     trip_in: TripCreateSchema,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
-) -> Any:
+) -> APIResponse:
     """
     Step 1: Calculates cost (via Google Maps driving route) and creates a draft trip.
     """
@@ -102,7 +114,7 @@ async def confirm_and_request_trip(
     payload: TripConfirmSchema,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
-) -> Any:
+) -> APIResponse:
     """
     Step 2: User selects payment method (CASH or CARD) and confirms.
     - If CASH: Immediately shifts status to SEARCHING for drivers.
@@ -170,7 +182,9 @@ async def confirm_and_request_trip(
         )
 
 # ----company ledger balance check for debt enforcement
-async def get_company_ledger_balance(session: AsyncSession, company_id: UUID) -> Decimal:
+async def get_company_ledger_balance(
+        session: AsyncSession, 
+        company_id: UUID) -> Decimal:
     """
     Sums all entries (positive and negative) in the company's ledger.
     Returns 0.00 if the company has no ledger entries yet.
@@ -193,7 +207,7 @@ async def accept_trip(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
     current_driver: Driver = Depends(get_current_driver)
-):
+)-> APIResponse:
     """
     Driver accepts a dispatch request. 
     Includes the Debt Enforcer to prevent fleets with unpaid commissions from taking jobs.
@@ -261,7 +275,9 @@ async def accept_trip(
 # 3. SETTLEMENT & COMPLETION LOGIC
 # ==========================================
 
-async def execute_trip_completion(trip_id: UUID, session: AsyncSession) -> bool:
+async def execute_trip_completion(
+        trip_id: UUID, 
+        session: AsyncSession) -> bool:
     """
     Core settlement engine executed upon user confirmation or 2-minute timer expiry:
     - CASH TRIPS: Logs a negative commission entry (-platform_fee) on the Company Ledger.
@@ -329,7 +345,7 @@ async def driver_arrive_at_destination(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     current_driver: Driver = Depends(get_current_driver)
-) -> Any:
+) -> APIResponse:
     """
     Driver signals arrival at drop-off location. Starts the 2-minute confirmation timer.
     """
@@ -349,7 +365,6 @@ async def driver_arrive_at_destination(
     session.add(trip)
     await session.commit()
 
-    from app.db.session import async_session_factory
     background_tasks.add_task(wait_and_auto_complete_trip, trip.id, async_session_factory)
 
     return APIResponse(
@@ -364,7 +379,7 @@ async def user_confirm_completion(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
-) -> Any:
+) -> APIResponse:
     """
     User manually confirms trip completion, triggering immediate ledger accounting.
     """
@@ -394,7 +409,7 @@ async def user_dispute_trip(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
-) -> Any:
+) -> APIResponse:
     """
     User flags an issue at drop-off, freezing auto-completion for admin review.
     """
@@ -424,7 +439,7 @@ async def get_trip_tracking_info(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
-):
+)-> APIResponse:
     """
     Returns a lean payload of the assigned driver, tow truck, and company.
     Designed for the customer app UI (similar to Uber/Bolt).
@@ -477,3 +492,415 @@ async def get_trip_tracking_info(
         message="Tracking information retrieved successfully.",
         data=tracking_data.model_dump()
     )
+
+# estimate courier price
+@router.post("/courier/estimate-price", response_model=APIResponse)
+async def request_courier_trip(
+    trip_in: CourierTripCreate,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+)-> APIResponse:
+    """
+    Calculates pricing and creates a DRAFT courier trip. 
+    Does not ping drivers yet.
+    """
+    # 1. Calculate the dynamic pricing based on user inputs
+    pricing = calculate_courier_price(trip_in)
+
+    # 2. Build the database model
+    # We NO LONGER exclude requested_vehicle_type because the DB needs it
+    new_trip = CourierTrip(
+        **trip_in.model_dump(), 
+        user_id=current_user.id,
+        status=CourierStatus.DRAFT, # <--- Saved as a draft quote
+        total_cost=pricing["total_cost"],
+        platform_fee=pricing["platform_fee"],
+        driver_payout=pricing["driver_payout"]
+        # created_at=get_utc_now_naive()
+    )
+
+    # 3. Save to database
+    session.add(new_trip)
+    await session.commit()
+    await session.refresh(new_trip)
+
+    # 5. Return the full response so the frontend can show the invoice
+    return APIResponse(
+        success=True,
+        message="Courier estimate generated. Please confirm to request a van.",
+        data={
+            "trip_id": str(new_trip.id),
+            "pricing": pricing,
+            "status": new_trip.status
+        }
+    )
+
+# confirm courier trip 
+@router.post("/courier/{trip_id}/confirm", response_model=APIResponse)
+async def confirm_courier_trip(
+    trip_id: str,
+    payload: CourierTripConfirm,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(get_current_user)
+)-> APIResponse:
+    # 1. Fetch trip and verify ownership
+    trip = await session.get(CourierTrip, trip_id)
+    
+    if not trip or str(trip.user_id) != str(current_user.id):
+        raise HTTPException(status_code=404, detail="Trip estimate not found.")
+        
+    if trip.status != CourierStatus.DRAFT:
+        raise HTTPException(status_code=400, detail="This trip has already been confirmed.")
+
+    # 2. Setup baseline payment data
+    trip.payment_method = payload.payment_method
+    trip.payment_status = "PENDING" # Unpaid by default
+
+    # --- CASH PAYMENT FLOW ---
+    if payload.payment_method == PaymentMethod.CASH:
+        trip.status = CourierStatus.PENDING # Dispatch van!
+        session.add(trip)
+        await session.commit()
+
+        # 3. (Future) Trigger Matchmaking / WebSockets
+        background_tasks.add_task(
+            broadcast_courier_trip_to_drivers,
+            trip_id=str(trip.id)
+        )
+
+        return APIResponse(
+            success=True,
+            message="Van dispatched! You will pay cash upon delivery.",
+            data={
+                "trip_id": str(trip.id),
+                "status": trip.status,
+                "payment_method": PaymentMethod.CASH,
+                "payment_status": trip.payment_status,
+                "total_charge": str(trip.total_cost)
+            }
+        )
+
+    # --- CARD PAYMENT FLOW (FLEXIBLE / PAY LATER) ---
+    else:
+        # Generate the invoice link, but don't force them to pay it immediately
+        # payment_data = await initialize_paystack_transaction(
+        #     email=current_user.email,
+        #     total_cost_ngn=float(trip.total_cost),
+        #     platform_fee_ngn=float(trip.platform_fee),
+        #     trip_id=str(trip.id)
+        # )
+
+    
+        payment_data = await initialize_courier_transaction(
+            email=current_user.email,
+            total_cost_ngn=float(trip.total_cost),
+            trip_id=str(trip.id)
+        )
+        
+        if not payment_data:
+            raise HTTPException(
+                status_code=503,
+                detail="Payment gateway unavailable. Please select Cash."
+            )
+            
+        trip.paystack_reference = payment_data["reference"]
+        trip.status = CourierStatus.PENDING # Dispatch van immediately!
+        
+        session.add(trip)
+        await session.commit()
+
+        background_tasks.add_task(
+            broadcast_courier_trip_to_drivers,
+            trip_id=str(trip.id)
+        )
+        
+        # 4. (Future) Trigger Matchmaking / WebSockets
+            # ping_nearby_vans(
+            #     trip_id=trip.id, 
+            #     lat=trip.pickup_lat, 
+            #     lng=trip.pickup_lng, 
+            #     vehicle_type=trip.requested_vehicle_type
+            # )
+
+        return APIResponse(
+            success=True,
+            message="Van dispatched! You can complete the card payment anytime before drop-off.",
+            data={
+                "trip_id": str(trip.id),
+                "status": trip.status,
+                "payment_method": PaymentMethod.CARD,
+                "payment_status": trip.payment_status, # Still 'PENDING'
+                "authorization_url": payment_data["authorization_url"],
+                "total_charge": str(trip.total_cost)
+            }
+        )
+
+# -----tracking endpoint is below, which returns live driver coordinates and van details
+@router.get("/courier/{trip_id}/tracking", response_model=APIResponse)
+async def track_courier_trip(
+    trip_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(get_current_user)
+)-> APIResponse:
+    """
+    Returns live tracking information for an ongoing courier trip, 
+    including the driver's current GPS coordinates.
+    """
+    # 1. Fetch the trip
+    trip = await session.get(CourierTrip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found.")
+        
+    # Security: Ensure only the person who ordered it can track it
+    if str(trip.user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized to track this trip.")
+
+    # 2. Build the base tracking payload
+    tracking_data = {
+        "trip_id": str(trip.id),
+        "status": trip.status,
+        "pickup_lat": trip.pickup_lat,
+        "pickup_lng": trip.pickup_lng,
+        "dropoff_lat": trip.dropoff_lat,
+        "dropoff_lng": trip.dropoff_lng,
+        "started_transit_at": trip.started_transit_at,
+        "driver": None,
+        "vehicle": None
+    }
+
+    # 3. If a driver has accepted, inject their live coordinates and van details
+    if trip.driver_id:
+        driver = await session.get(CourierDriver, trip.driver_id)
+        if driver:
+            tracking_data["driver"] = {
+                "driver_id": str(driver.id),
+                # Adjust field names below if your decoupled driver model uses different ones
+                "name": f"{getattr(driver, 'first_name', '')} {getattr(driver, 'last_name', '')}".strip(),
+                "phone": getattr(driver, 'phone', 'N/A'),
+                "current_lat": driver.current_lat,
+                "current_lng": driver.current_lng
+            }
+            
+        if trip.vehicle_id:
+            vehicle = await session.get(CourierVehicle, trip.vehicle_id)
+            if vehicle:
+                tracking_data["vehicle"] = {
+                    "make": vehicle.make,
+                    "model": vehicle.model,
+                    "license_plate": vehicle.license_plate,
+                    "vehicle_type": vehicle.vehicle_type
+                }
+
+    return APIResponse(
+        success=True,
+        message="Tracking info retrieved successfully.",
+        data=tracking_data
+    )
+
+# courier driver accepts trip endpoint
+@router.post("/courier_driver/{trip_id}/accept", response_model=APIResponse)
+async def accept_courier_trip(
+    trip_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_driver: CourierDriver = Depends(get_current_driver)
+)-> APIResponse:
+    """
+    Driver accepts a pending trip. 
+    Locks the trip to this driver and their active vehicle.
+    """
+    # 1. Fetch the trip
+    trip = await session.get(CourierTrip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found.")
+        
+    # 2. Check if the trip is still available
+    if trip.status != CourierStatus.PENDING:
+        raise HTTPException(
+            status_code=400, 
+            detail="This trip is no longer available. Another driver may have accepted it."
+        )
+        
+    # 3. Ensure the driver has an active vehicle selected
+    if not current_driver.current_vehicle_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="You must have an active vehicle selected to accept trips."
+        )
+
+    # 4. Assign the trip to the driver
+    trip.driver_id = current_driver.id
+    trip.vehicle_id = current_driver.current_vehicle_id
+    trip.status = CourierStatus.ACCEPTED
+    
+    session.add(trip)
+    await session.commit()
+    await session.refresh(trip)
+
+    return APIResponse(
+        success=True,
+        message="Trip accepted successfully! Proceed to pickup location.",
+        data={"trip_id": str(trip.id), "status": trip.status}
+    )
+
+# courier driver decline/cancels trip
+@router.post("/courier_driver/{trip_id}/decline", response_model=APIResponse)
+async def decline_courier_trip(
+    trip_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_driver: CourierDriver = Depends(get_current_driver)
+)-> APIResponse:
+    """
+    Driver declines a trip.
+    If they already accepted it, unassign them, penalize them, and revert the trip to PENDING.
+    """
+    trip = await session.get(CourierTrip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found.")
+
+    # SCENARIO A: The driver already accepted this trip and is now canceling
+    if str(trip.driver_id) == str(current_driver.id) and trip.status == CourierStatus.ACCEPTED:
+        
+        # 1. Revert trip back to the matchmaking pool so the customer isn't stranded
+        trip.driver_id = None
+        trip.vehicle_id = None
+        trip.status = CourierStatus.PENDING
+        
+        # 2. TODO: Implement Penalty Logic Here
+        # Example: 
+        # current_driver.cancellation_count += 1
+        # current_driver.rating -= 0.1
+        # session.add(current_driver)
+        
+        session.add(trip)
+        await session.commit()
+
+        # 3. (Future) Trigger WebSockets to alert the customer their driver changed
+        # notify_customer_driver_cancelled(trip.user_id)
+
+        return APIResponse(
+            success=True,
+            message="Trip cancelled. This cancellation has been logged on your profile.",
+            data={"trip_id": str(trip.id), "status": trip.status}
+        )
+        
+    # SCENARIO B: Driver is just declining an initial ping (not accepted yet)
+    elif trip.status == CourierStatus.PENDING:
+        # TODO: Add logic to a "trip_rejections" table so the matchmaking engine 
+        # knows not to ping this specific driver for this specific trip again.
+        
+        return APIResponse(
+            success=True,
+            message="Trip declined. We will find another driver.",
+            data=None
+        )
+
+    # SCENARIO C: Trying to decline a trip that's already in transit or completed
+    else:
+        raise HTTPException(
+            status_code=400, 
+            detail="You cannot decline a trip that is already in progress or completed."
+        )
+
+
+@router.post("/courier_driver/{trip_id}/complete", response_model=APIResponse)
+async def complete_courier_trip(
+    trip_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_driver = Depends(get_current_driver)
+)-> APIResponse:
+    """
+    Driver clicks 'Complete Delivery'. 
+    Verifies payment is settled before allowing completion.
+    """
+    trip = await session.get(CourierTrip, trip_id)
+    if not trip or str(trip.driver_id) != str(current_driver.id):
+        raise HTTPException(status_code=404, detail="Trip not found.")
+        
+    if trip.status == CourierStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Trip is already completed.")
+
+    # 1. SECURITY LOCK: Do not allow completion if Card payment is still pending
+    if trip.payment_method == "CARD" and trip.payment_status != "PAID":
+         raise HTTPException(
+             status_code=402, # Payment Required
+             detail="Customer card payment is still pending. Do not release cargo yet."
+         )
+
+    # 2. Process Cash Trips (Log the commission debt)
+    if trip.payment_method == "CASH":
+        trip.payment_status = "DEBT_LOGGED"
+        
+        ledger_entry = CourierDriverHistory(
+            driver_id=trip.driver_id,
+            trip_id=trip.id,
+            entry_type=CourierLedgerEntryType.COMMISSION_DEBT,
+            amount=-float(trip.platform_fee),
+            description=f"Commission debt for Cash Trip #{str(trip.id)[:8]}"
+        )
+        session.add(ledger_entry)
+
+    # 3. Finalize the Trip
+    trip.status = CourierStatus.COMPLETED
+    trip.completed_at = get_utc_now_naive()
+    
+    session.add(trip)
+    await session.commit()
+    
+    return APIResponse(
+        success=True, 
+        message="Delivery completed successfully!",
+        data={"trip_id": str(trip.id), "status": trip.status}
+    )
+
+
+@router.post("/{trip_id}/arrive", response_model=APIResponse)
+async def driver_arrived_at_dropoff(
+    trip_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+    current_driver = Depends(get_current_driver)
+)-> APIResponse:
+    """
+    Marks the trip as ARRIVED when the driver reaches the drop-off location.
+    Triggers the 2-minute auto-completion timer.
+    """
+    # 1. Fetch the trip from the database
+    trip = await session.get(CourierTrip, trip_id)
+
+    # 2. Check if the trip exists
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found.")
+
+    # 3. Security: Ensure this trip belongs to the driver trying to update it
+    if str(trip.driver_id) != str(current_driver.id):
+        raise HTTPException(status_code=403, detail="You are not assigned to this trip.")
+
+    # 4. State validation: Ensure the trip isn't already finished or cancelled
+    if trip.status in [CourierStatus.COMPLETED, CourierStatus.CANCELLED]:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot mark arrival. Trip is currently {trip.status}."
+        )
+
+    # Prevent duplicate triggers if they tap the button twice
+    if trip.status == CourierStatus.ARRIVED:
+        return APIResponse(success=True, message="Already marked as arrived.")
+    
+    trip.status = CourierStatus.ARRIVED
+    session.add(trip)
+    await session.commit()
+    await session.refresh(trip)
+
+    # Start the 2-minute countdown clock
+    background_tasks.add_task(
+        wait_and_auto_complete_courier_trip,
+        trip_id=str(trip.id),
+        session_factory=async_session_factory # Pass your session factory
+    )
+
+    return APIResponse(
+        success=True, 
+        message="Arrived at drop-off. Please collect payment if CASH.",
+        data={"trip_id": str(trip.id), "status": trip.status}
+        )

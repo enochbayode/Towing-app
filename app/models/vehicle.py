@@ -1,7 +1,9 @@
+import uuid
+from uuid6 import uuid7
 import enum
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional, TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import UUID
 from datetime import datetime, timezone
 
 if TYPE_CHECKING:
@@ -17,7 +19,7 @@ class TowTruckType(str, enum.Enum):
 class Vehicle(SQLModel, table=True):
     __tablename__ = "vehicle"
 
-    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     
     # Relationships & Foreign Keys
     # Links to the singular "company" table as we fixed earlier

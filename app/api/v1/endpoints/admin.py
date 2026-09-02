@@ -38,7 +38,7 @@ async def invite_driver(
     session: AsyncSession = Depends(get_session),
     invite_in: DriverInvite, # This schema now only requires full_name and email
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Invite a new driver to the Admin's company. Generates a temporary password,
     creates the account as 'pending' using only email and name, and sends an onboarding email.
@@ -135,7 +135,7 @@ async def get_company_drivers(
     *,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Retrieve a list of all drivers (pending, accepted, or suspended) 
     operating under the current Admin's company.
@@ -173,7 +173,7 @@ async def suspend_driver(
     session: AsyncSession = Depends(get_session),
     driver_id: str,
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Suspend a driver. This prevents them from logging in or receiving dispatch requests.
     Admins can only suspend drivers within their own company.
@@ -230,7 +230,7 @@ async def reactivate_driver(
     session: AsyncSession = Depends(get_session),
     driver_id: str,
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Reactivate a previously suspended driver. 
     Restores them to 'accepted' if they previously verified, or 'pending' if they haven't.

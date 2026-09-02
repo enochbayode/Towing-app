@@ -11,17 +11,20 @@ from app.models.trip import TripStatus, TransactionType
 # ==========================================
 # ENUMS (Local to Trip)
 # ==========================================
-class VehicleType(str, enum.Enum):
+class CustomerVehicleType(str, enum.Enum):
+    """The type of vehicle the customer owns that is broken down."""
     SEDAN = "sedan"
     SUV = "suv"
     TRUCK = "truck"
+    MINIVAN = "minivan"
     MOTORCYCLE = "motorcycle"
+    BUS = "bus"
 
 class TowTruckType(str, enum.Enum):
-    FLATBED = "flatbed"
-    WHEEL_LIFT = "wheel_lift" # Also known as chained/wrecker
-    HEAVY_DUTY = "heavy_duty"
-
+    """Assets registered strictly for the Towing/Roadside domain."""
+    FLATBED = "flatbed"       # Vehicle carrier
+    WHEEL_LIFT = "wheel_lift" # Chained/wrecker
+    HEAVY_DUTY = "heavy_duty" # For large vehicles like buses or semi-trucks
 
 # ==========================================
 # TRIP SCHEMAS
@@ -42,7 +45,7 @@ class TripCreateSchema(TripBase):
     Data from the User's app. Notice base_cost is GONE.
     The user only tells us WHAT they need and WHERE they are.
     """
-    vehicle_type: VehicleType = Field(..., description="The size/type of the user's vehicle")
+    vehicle_type: CustomerVehicleType = Field(..., description="The size/type of the user's vehicle")
     truck_type: TowTruckType = Field(..., description="The type of tow truck requested")
 
 class TripConfirmSchema(BaseModel):

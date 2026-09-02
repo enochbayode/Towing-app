@@ -1,3 +1,5 @@
+import uuid
+from uuid6 import uuid7
 import enum
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional, List
@@ -46,7 +48,7 @@ class LedgerEntryType(str, enum.Enum):
 class Trip(SQLModel, table=True):
     __tablename__ = "trips"
 
-    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     
     # Foreign Keys
     user_id: UUID = Field(foreign_key="users.id", index=True)
@@ -91,7 +93,7 @@ class CompanyLedger(BaseTable := SQLModel, table=True):
     """
     __tablename__ = "company_ledgers"
 
-    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     company_id: UUID = Field(foreign_key="company.id", index=True)
     driver_id: Optional[UUID] = Field(default=None, foreign_key="drivers.id", index=True)
     trip_id: Optional[UUID] = Field(default=None, foreign_key="trips.id", index=True)
@@ -111,7 +113,7 @@ class Transaction(SQLModel, table=True):
     """
     __tablename__ = "transactions"
 
-    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     trip_id: UUID = Field(foreign_key="trips.id", index=True)
     
     type: TransactionType = Field(index=True)

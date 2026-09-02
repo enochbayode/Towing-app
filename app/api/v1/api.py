@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, admin, driver, company, trip, webhook, vehicle
+from app.api.v1.endpoints import auth, admin, driver, company, trip, webhook, vehicle, courier
 
 api_router = APIRouter()
 
@@ -53,4 +53,10 @@ api_router.include_router(
     webhook.router, 
     prefix="/paystack-webhook", 
     tags=["webhooks"]
+)
+
+api_router.include_router(
+    courier.router,
+    prefix="/courier", 
+    tags=["Courier endpoints"]
 )

@@ -7,8 +7,7 @@ from app.db.session import async_session_factory
 from app.models.trip import Trip, TripStatus
 from app.services.dispatch import find_nearby_drivers
 from app.utils.driver_notification import push_trip_to_driver
-from app.models.ledger import CompanyLedger, EntryType as LedgerEntryType
-from app.models.user import PaymentMethod, PaymentStatus
+from app.models.trip import CompanyLedger, LedgerEntryType, PaymentStatus, PaymentMethod
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -73,7 +72,7 @@ async def broadcast_trip_to_drivers(trip_id: str):
             # TODO: Send FCM Push Notification to the User: "Sorry, all our tow trucks are currently busy. Please try requesting again."
 
 
-
+# wait
 async def wait_and_auto_complete_trip(trip_id: UUID, session_factory):
     """
     Background Task: Waits 2 minutes post-arrival.

@@ -15,7 +15,7 @@ async def push_trip_to_driver(fcm_token: str, trip_id: str, pickup_address: str,
 
     message = messaging.Message(
         notification=messaging.Notification(
-            title="🚨 New Tow Request!",
+            title="New Tow Request!",
             body=f"Pickup at {pickup_address}. Tap to accept."
         ),
         data={

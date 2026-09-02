@@ -1,5 +1,6 @@
 from enum import Enum
 import uuid
+from uuid6 import uuid7
 from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import Field, SQLModel
@@ -9,10 +10,12 @@ class PaymentMethod(str, Enum):
     CASH = "CASH"
     CARD = "CARD"
 
+# class PaymentStatus
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
     
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     email: str = Field(unique=True, index=True, nullable=False)
     hashed_password: str = Field(nullable=False)
     full_name: str = Field(nullable=False)

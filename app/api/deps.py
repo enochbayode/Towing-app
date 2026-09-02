@@ -13,6 +13,7 @@ from app.db.session import get_session
 from app.models.user import User
 from app.models.admin import Admin
 from app.models.driver import Driver
+from app.models.courier_driver import CourierDriver
 
 
 
@@ -155,3 +156,45 @@ async def get_current_admin(
         raise credentials_exception
         
     return admin
+
+# ==========================================
+# 5. COURIER DRIVER DEPENDENCY
+# ==========================================
+async def get_current_courier(
+    credentials: HTTPAuthorizationCredentials = Depends(token_auth_scheme), 
+    session: AsyncSession = Depends(get_session)
+) -> CourierDriver:
+    
+    token = credentials.credentials 
+    
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        courier_driver_id: str = payload.get("sub")
+        role: str = payload.get("role")
+        
+        # SECURITY: Ensure ID exists AND role is specifically for courier drivers
+        if courier_driver_id is None or role != "courier_driver":
+            raise credentials_exception
+            
+    except JWTError:
+        raise credentials_exception
+        
+    # Fetch the courier driver explicitly
+    statement = select(CourierDriver).where(CourierDriver.id == courier_driver_id) 
+    
+    result = await session.execute(statement)
+    courier_driver = result.scalar_one_or_none()
+    
+    if courier_driver is None:
+        raise credentials_exception
+        
+    # Notice: We removed the `is_admin_verified` block here.
+    # Independent couriers need to access their profile to finish onboarding.
+        
+    return courier_driver

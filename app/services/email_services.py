@@ -31,6 +31,10 @@ def send_otp(email: str, full_name: str, otp_code: str, role: str) -> None:
             subject = "Tow Fleet Onboarding - Verification Code"
             greeting = f"Welcome Operator {full_name},"
             context = "Use the code below to verify your driver profile and start receiving dispatch requests."
+        elif role == "courier_driver":
+            subject = "Courier Driver Onboarding - Verification Code"
+            greeting = f"Hello {full_name},"
+            context = "Use the code below to verify your courier driver profile and start accepting delivery requests."
         else: # admin
             subject = "Admin Portal Verification"
             greeting = f"Hello {full_name},"

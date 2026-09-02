@@ -49,6 +49,21 @@ class Settings(BaseSettings):
 
     # MAX_COMMISSION_DEBT: float = 15000.00
 
+    # Courier Pricing Config
+    COURIER_BASE_FARE: float = 5000.00
+    COURIER_PER_KM_RATE: float = 250.00
+    COURIER_LABOR_SURCHARGE: float = 3000.00
+    COURIER_PASSENGER_SURCHARGE: float = 1000.00
+    COURIER_INTERSTATE_SURCHARGE: float = 25000.00
+    COURIER_NIGHT_MULTIPLIER: float = 1.50
+    COURIER_PLATFORM_COMMISSION: float = 0.15
+
+    # Vehicle Type Multipliers
+    COURIER_MULT_MOTORCYCLE: float = 0.4
+    COURIER_MULT_SPRINTER: float = 1.0
+    COURIER_MULT_BOX_TRUCK: float = 2.5
+
+
     # --- CORS ---
     # This parses the string in .env into a real Python list
     ALLOWED_ORIGINS: List[str] = [

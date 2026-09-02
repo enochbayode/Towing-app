@@ -1,4 +1,5 @@
 import uuid
+from uuid6 import uuid7
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 from sqlmodel import Field, SQLModel, Relationship
@@ -9,7 +10,7 @@ if TYPE_CHECKING:
 class Driver(SQLModel, table=True):
     __tablename__ = "drivers"
     
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True, index=True)
+    id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     # Foreign Key linking to the Company (Mandatory)
     company_id: uuid.UUID = Field(foreign_key="company.id")
     

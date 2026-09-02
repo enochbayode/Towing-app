@@ -2,7 +2,7 @@ import math
 import pytz
 from decimal import Decimal
 from datetime import datetime, time
-from app.schemas.trip import VehicleType, TowTruckType
+from app.schemas.trip import CustomerVehicleType, TowTruckType
 from app.services.map_integration import get_route_details # NEW IMPORT
 
 # --- PRICING MATRIX ---
@@ -11,10 +11,12 @@ COST_PER_KM = 800.0           # Cost per kilometer of towing (in NGN)
 NIGHT_SURGE_MULTIPLIER = 1.5  # Nighttime surcharge (10 PM to 5 AM)
 
 VEHICLE_MULTIPLIERS = {
-    VehicleType.MOTORCYCLE: 0.8, 
-    VehicleType.SEDAN: 1.0,      
-    VehicleType.SUV: 1.3,        
-    VehicleType.TRUCK: 1.8       
+    CustomerVehicleType.MOTORCYCLE: 0.8, 
+    CustomerVehicleType.SEDAN: 1.0,      
+    CustomerVehicleType.SUV: 1.3,        
+    CustomerVehicleType.TRUCK: 1.8,
+    CustomerVehicleType.BUS: 2.5,
+    CustomerVehicleType.MINIVAN: 1.5     
 }
 
 TRUCK_TYPE_MULTIPLIERS = {
@@ -49,7 +51,7 @@ async def calculate_tow_cost(
     pickup_lng: float, 
     dropoff_lat: float, 
     dropoff_lng: float, 
-    vehicle_type: VehicleType, 
+    vehicle_type: CustomerVehicleType, 
     truck_type: TowTruckType
 ) -> Decimal:
     """

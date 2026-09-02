@@ -194,3 +194,106 @@ async def initialize_debt_settlement(
     except Exception as e:
         logger.error(f"Failed to connect to Paystack: {str(e)}")
         return None
+
+
+
+# Add these to the bottom of app/services/paystack_int...
+
+async def initialize_courier_transaction(
+    email: str, 
+    total_cost_ngn: float, 
+    trip_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Initializes a Paystack transaction for a Courier trip.
+    Because the driver is assigned AFTER this link is generated, 
+    we do not use a split-payment subaccount. 100% goes to the platform,
+    and the driver's payout is credited to their ledger.
+    """
+    url = "https://api.paystack.co/transaction/initialize"
+    
+    headers = {
+        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    amount_kobo = int(total_cost_ngn * 100)
+    
+    # Unique reference for courier trips
+    unique_reference = f"courier_trip_{trip_id}_{int(datetime.now(timezone.utc).timestamp())}"
+    
+    payload = {
+        "email": email,
+        "amount": str(amount_kobo),
+        "reference": unique_reference,
+        "metadata": {
+            "trip_id": str(trip_id),
+            "transaction_type": "COURIER_TRIP"
+        }
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=10.0)
+            
+            if response.status_code == 200:
+                data = response.json()["data"]
+                return {
+                    "authorization_url": data["authorization_url"],
+                    "reference": data["reference"]
+                }
+            else:
+                logger.error(f"Courier Paystack Init Error: {response.text}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Failed to connect to Paystack for Courier: {str(e)}")
+        return None
+
+
+async def initialize_courier_debt_settlement(
+    email: str, 
+    amount_ngn: float, 
+    driver_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Allows an independent courier driver to pay off their negative ledger balance 
+    (the platform commissions they owe from completing CASH trips).
+    """
+    url = "https://api.paystack.co/transaction/initialize"
+    
+    headers = {
+        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    amount_kobo = int(amount_ngn * 100)
+    unique_reference = f"courier_settlement_{driver_id}_{int(datetime.now(timezone.utc).timestamp())}"
+    
+    payload = {
+        "email": email,
+        "amount": str(amount_kobo),
+        "reference": unique_reference,
+        "metadata": {
+            "transaction_type": "COURIER_DEBT_SETTLEMENT",
+            "driver_id": str(driver_id)
+        }
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=10.0)
+            
+            if response.status_code == 200:
+                data = response.json()["data"]
+                return {
+                    "authorization_url": data["authorization_url"],
+                    "reference": data["reference"]
+                }
+            else:
+                logger.error(f"Courier Settlement Init Error: {response.text}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Failed to connect to Paystack: {str(e)}")
+        return None

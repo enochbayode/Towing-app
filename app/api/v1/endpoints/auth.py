@@ -27,7 +27,7 @@ async def create_user(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     user_in: UserCreate,
-) -> Any:
+) -> APIResponse:
     """
     Create a new User Account and send verification OTP.
     """
@@ -88,7 +88,7 @@ async def verify_user_otp(
     *,
     session: AsyncSession = Depends(get_session),
     verify_in: OTPVerify,
-) -> Any:
+) -> APIResponse:
     """
     Verify the OTP sent to the User's email.
     """
@@ -156,7 +156,7 @@ async def resend_user_otp(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     resend_in: OTPResend,
-) -> Any:
+) -> APIResponse:
     """
     Generate and send a new OTP to the User's email.
     """
@@ -216,7 +216,7 @@ async def resend_user_otp(
 async def login_user(
     login_data: LoginRequest, 
     session: AsyncSession = Depends(get_session)
-) -> Any:
+) -> APIResponse:
     """
     Authenticate User and return a JWT token alongside the user profile.
     """
@@ -273,7 +273,7 @@ async def login_user(
 @router.get("/user/me", response_model=APIResponse[UserResponse])
 async def get_user_me(
     current_user: User = Depends(get_current_user)
-) -> Any:
+) -> APIResponse:
     """
     Retrieve the profile of the currently logged-in User.
     Notice we don't query the DB directly here; the 'Depends(get_current_user)' handles it!
@@ -297,7 +297,7 @@ async def change_password(
     session: AsyncSession = Depends(get_session),
     password_in: ChangePasswordRequest,
     current_user: User = Depends(get_current_user)
-) -> Any:
+) -> APIResponse:
     """
     Allow an authenticated User to change their password.
     """
@@ -339,7 +339,7 @@ async def create_admin(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     admin_in: AdminCreate,
-) -> Any:
+) -> APIResponse:
     """
     Create a new Admin Account and send verification OTP.
     """
@@ -402,7 +402,7 @@ async def verify_admin_otp(
     *,
     session: AsyncSession = Depends(get_session),
     verify_in: OTPVerify,
-) -> Any:
+) -> APIResponse:
     """
     Verify the OTP sent to the Admin's email.
     """
@@ -452,7 +452,7 @@ async def resend_admin_otp(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     resend_in: OTPResend,
-) -> Any:
+) -> APIResponse:
     """
     Generate and send a new OTP to the Admin's email.
     """
@@ -497,7 +497,7 @@ async def resend_admin_otp(
 async def login_admin(
     login_in: LoginRequest,
     session: AsyncSession = Depends(get_session)
-) -> Any:
+) -> APIResponse:
     """
     Authenticate Admin and return a JWT token alongside the admin profile.
     """
@@ -554,7 +554,7 @@ async def login_admin(
 @router.get("/admin/me", response_model=APIResponse[AdminResponse])
 async def get_admin_me(
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Retrieve the profile of the currently logged-in Admin.
     Protected by the HTTPBearer role-checking dependency.
@@ -580,7 +580,7 @@ async def change_admin_password(
     session: AsyncSession = Depends(get_session),
     password_in: ChangePasswordRequest,
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Allow an authenticated Admin to change their password.
     """
@@ -600,3 +600,4 @@ async def change_admin_password(
         message="Password changed successfully.",
         data=None
     )
+

@@ -42,7 +42,7 @@ async def register_company(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin) # Ensures they are logged in
-) -> Any:
+) -> APIResponse:
     
     # 1. Check if the admin already has a company registered
     if current_admin.company_id:
@@ -86,7 +86,7 @@ async def register_company(
 async def get_my_company(
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Retrieves the company profile owned by the currently logged-in Admin.
     """
@@ -120,7 +120,7 @@ async def update_my_company(
     company_update: CompanyUpdate,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Updates the company profile owned by the currently logged-in Admin.
     Allows partial updates (e.g., just updating the address).
@@ -164,7 +164,7 @@ async def add_payment_account(
     account_in: PaymentAccountCreate,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     
     if not current_admin.company_id:
         raise HTTPException(status_code=400, detail="Register a company profile first.")
@@ -225,7 +225,7 @@ async def update_payment_account(
     account_in: PaymentAccountCreate,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-) -> Any:
+) -> APIResponse:
     """
     Updates an existing payment account.
     Requires full bank details to re-verify the account name and 
@@ -296,7 +296,7 @@ async def update_payment_account(
 async def get_company_dashboard(
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """
     Returns the core metrics for the company dashboard:
     Total earnings, commission debt, completed trips, and active assets.
@@ -362,7 +362,7 @@ async def get_company_dashboard(
 async def settle_company_debt(
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """
     Checks the company's ledger and initializes a Paystack checkout 
     if they have a negative balance.
@@ -414,7 +414,7 @@ async def get_company_drivers(
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """Returns a paginated list of all drivers in the company's fleet."""
     company_id = current_admin.company_id
     if not company_id:
@@ -441,7 +441,7 @@ async def update_driver_status(
     payload: DriverStatusUpdate,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """
     Activates or deactivates a driver. 
     A deactivated driver cannot accept new trip dispatches.
@@ -479,7 +479,7 @@ async def get_company_trips(
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """
     Returns a paginated list of the company's dispatch history.
     """
@@ -508,7 +508,7 @@ async def add_vehicle(
     payload: VehicleCreate,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """Adds a new tow truck to the company's fleet."""
     if not current_admin.company_id:
         raise HTTPException(status_code=400, detail="Register a company profile first.")
@@ -538,7 +538,7 @@ async def update_vehicle(
     payload: VehicleUpdate,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """Edits an existing vehicle's details."""
     statement = select(Vehicle).where(
         Vehicle.id == vehicle_id, 
@@ -571,7 +571,7 @@ async def delete_vehicle(
     vehicle_id: UUID,
     session: AsyncSession = Depends(get_session),
     current_admin: Admin = Depends(get_current_admin)
-):
+)-> APIResponse:
     """
     Permanently deletes a vehicle from the company's fleet.
     Will fail if the vehicle is already associated with historical trips.
