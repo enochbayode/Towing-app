@@ -12,6 +12,7 @@ from app.core import security
 from app.api.deps import get_current_admin
 from app.models.admin import Admin
 from app.models.driver import Driver
+from app.models.vehicle import Vehicle
 from app.models.company import Company
 from app.schemas.user import APIResponse
 from app.schemas.driver import DriverInvite, DriverResponse, DriverStatusUpdate
@@ -282,3 +283,24 @@ async def reactivate_driver(
         )
     )
 
+@router.get("/fleet/vehicles", response_model=APIResponse)
+async def get_fleet_vehicles(
+    session: AsyncSession = Depends(get_session),
+    current_admin: Driver = Depends(get_current_admin)
+)-> APIResponse:
+    """
+    Returns all active vehicles in the driver's company.
+    The frontend can use `driver_id` to show if a truck is 'Available' or 'In Use'.
+    """
+    statement = select(Vehicle).where(
+        Vehicle.company_id == current_admin.company_id,
+        Vehicle.is_active == True
+    )
+    result = await session.execute(statement)
+    vehicles = result.scalars().all()
+
+    return APIResponse(
+        success=True,
+        message="Fleet vehicles retrieved successfully.",
+        data=vehicles
+    )

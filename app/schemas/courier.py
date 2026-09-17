@@ -110,3 +110,10 @@ class PaymentMethod(str, Enum):
 
 class CourierTripConfirm(BaseModel):
     payment_method: PaymentMethod
+
+class TripCancelRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, description="Reason for cancelling the trip")
+
+class DriverLocationPayload(BaseModel):
+    latitude: float = Field(..., description="Driver's current GPS latitude")
+    longitude: float = Field(..., description="Driver's current GPS longitude")

@@ -35,6 +35,9 @@ class User(SQLModel, table=True):
             nullable=False
         )
     )
+
+    # The live tracker of what they currently owe due to cancellations or disputes. This is separate from the total_cost of any trip.
+    pending_cancellation_fee: float = Field(default=0.0, description="Unpaid cancellation fees carried over")
     
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

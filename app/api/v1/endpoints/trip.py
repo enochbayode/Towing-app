@@ -37,14 +37,15 @@ from app.models.courier_driver import CourierDriver
 from app.models.courier_vehicle import CourierVehicle
 
 from app.schemas.trip import TripTrackingResponse, DriverTrackingInfo, CompanyTrackingInfo, VehicleTrackingInfo
-from app.schemas.courier import CourierTripCreate, CourierTripResponse
+from app.schemas.courier import CourierTripCreate, CourierTripResponse,TripCancelRequest
 from app.schemas.trip import TripCreateSchema, TripConfirmSchema
 from app.schemas.user import APIResponse
-from app.schemas.courier import CourierTripConfirm, PaymentMethod
+from app.schemas.courier import CourierTripConfirm, PaymentMethod, DriverLocationPayload
 from app.services.courier_pricing_engine import calculate_courier_price
 from app.services.pricing_engine import calculate_tow_cost
 from app.utils.courier_dispatch_worker import broadcast_courier_trip_to_drivers
 from app.utils.courier_dispatch_worker import wait_and_auto_complete_courier_trip
+from app.utils.geofence import calculate_distance_meters
 from app.core.config import settings
 
 
@@ -58,7 +59,7 @@ MAX_COMMISSION_DEBT_ALLOWED = settings.MAX_COMMISSION_DEBT_ALLOWED  # e.g., -100
 # 1. ESTIMATE & CONFIRMATION FLOW
 # ==========================================
 
-@router.post("/estimate", response_model=APIResponse)
+@router.post("/user/estimate", response_model=APIResponse)
 async def get_trip_estimate(
     trip_in: TripCreateSchema,
     session: AsyncSession = Depends(get_session),
@@ -109,7 +110,7 @@ async def get_trip_estimate(
     )
 
 # ----confirmation endpoint is below, after the WebSocket and location update endpoints
-@router.post("/confirm", response_model=APIResponse)
+@router.post("/user/confirm", response_model=APIResponse)
 async def confirm_and_request_trip(
     payload: TripConfirmSchema,
     session: AsyncSession = Depends(get_session),
@@ -202,7 +203,7 @@ async def get_company_ledger_balance(
 # 2. DRIVER DISPATCH & ACCEPTANCE
 # ==========================================
 
-@router.post("/{trip_id}/driver/accept", response_model=APIResponse)
+@router.post("/driver/{trip_id}/accept", response_model=APIResponse)
 async def accept_trip(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -374,7 +375,7 @@ async def driver_arrive_at_destination(
     )
 
 # -------- confirm and complete trip endpoints are below, followed by dispute and tracking info endpoints
-@router.post("/{trip_id}/confirm-completion", response_model=APIResponse)
+@router.post("/user/{trip_id}/confirm-completion", response_model=APIResponse)
 async def user_confirm_completion(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -404,7 +405,7 @@ async def user_confirm_completion(
     )
 
 # -----dispute and tracking info endpoints are below
-@router.post("/{trip_id}/dispute", response_model=APIResponse)
+@router.post("/user/{trip_id}/dispute", response_model=APIResponse)
 async def user_dispute_trip(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -434,7 +435,7 @@ async def user_dispute_trip(
     )
 
 # -----tracking info endpoint is below
-@router.get("/{trip_id}/tracking-info", response_model=APIResponse)
+@router.get("/user/{trip_id}/tracking-info", response_model=APIResponse)
 async def get_trip_tracking_info(
     trip_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -494,49 +495,103 @@ async def get_trip_tracking_info(
     )
 
 # estimate courier price
-@router.post("/courier/estimate-price", response_model=APIResponse)
+# @router.post("/user/courier/estimate-price", response_model=APIResponse)
+# async def request_courier_trip(
+#     trip_in: CourierTripCreate,
+#     session: AsyncSession = Depends(get_session),
+#     current_user: User = Depends(get_current_user)
+# )-> APIResponse:
+#     """
+#     Calculates pricing and creates a DRAFT courier trip. 
+#     Does not ping drivers yet.
+#     """
+#     # 1. Calculate the dynamic pricing based on user inputs
+#     pricing = calculate_courier_price(trip_in)
+
+#     # 2. Build the database model
+#     # We NO LONGER exclude requested_vehicle_type because the DB needs it
+#     new_trip = CourierTrip(
+#         **trip_in.model_dump(), 
+#         user_id=current_user.id,
+#         status=CourierStatus.DRAFT, # <--- Saved as a draft quote
+#         total_cost=pricing["total_cost"],
+#         platform_fee=pricing["platform_fee"],
+#         driver_payout=pricing["driver_payout"]
+#         # created_at=get_utc_now_naive()
+#     )
+
+#     # 3. Save to database
+#     session.add(new_trip)
+#     await session.commit()
+#     await session.refresh(new_trip)
+
+#     # 5. Return the full response so the frontend can show the invoice
+#     return APIResponse(
+#         success=True,
+#         message="Courier estimate generated. Please confirm to request a van.",
+#         data={
+#             "trip_id": str(new_trip.id),
+#             "pricing": pricing,
+#             "status": new_trip.status
+#         }
+#     )
+
+@router.post("/user/courier/estimate-price", response_model=APIResponse)
 async def request_courier_trip(
     trip_in: CourierTripCreate,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
-)-> APIResponse:
+) -> APIResponse:
     """
-    Calculates pricing and creates a DRAFT courier trip. 
-    Does not ping drivers yet.
+    Calculates pricing, checks user debt, and creates a DRAFT courier trip.
     """
     # 1. Calculate the dynamic pricing based on user inputs
-    pricing = calculate_courier_price(trip_in)
+    base_pricing = calculate_courier_price(trip_in)
 
-    # 2. Build the database model
-    # We NO LONGER exclude requested_vehicle_type because the DB needs it
+    # 2. Check for existing debt on the User profile and convert to Decimal
+    previous_debt = Decimal(str(current_user.pending_cancellation_fee or 0.0))
+
+    # Both are now Decimals, so addition will succeed safely without rounding errors
+    final_total = base_pricing["total_cost"] + previous_debt
+
+    # 3. Build the database model
     new_trip = CourierTrip(
         **trip_in.model_dump(), 
         user_id=current_user.id,
-        status=CourierStatus.DRAFT, # <--- Saved as a draft quote
-        total_cost=pricing["total_cost"],
-        platform_fee=pricing["platform_fee"],
-        driver_payout=pricing["driver_payout"]
-        # created_at=get_utc_now_naive()
+        status=CourierStatus.DRAFT, 
+        total_cost=final_total, 
+        platform_fee=base_pricing["platform_fee"],
+        driver_payout=base_pricing["driver_payout"],
+        applied_debt=previous_debt  # <--- LOGGED PERMANENTLY ON THIS TRIP
     )
 
-    # 3. Save to database
+    # 4. Save to database
     session.add(new_trip)
     await session.commit()
     await session.refresh(new_trip)
 
-    # 5. Return the full response so the frontend can show the invoice
+    # 5. Build a transparent pricing payload for the frontend UI
+    pricing_breakdown = {
+        "base_trip_cost": base_pricing["total_cost"],
+        "previous_debt_applied": previous_debt,
+        "final_total_cost": final_total,
+        "platform_fee": base_pricing["platform_fee"],
+        "driver_payout": base_pricing["driver_payout"]
+    }
+
+    # 6. Return the standard APIResponse
     return APIResponse(
         success=True,
         message="Courier estimate generated. Please confirm to request a van.",
         data={
             "trip_id": str(new_trip.id),
-            "pricing": pricing,
+            "pricing": pricing_breakdown,
             "status": new_trip.status
         }
     )
 
 # confirm courier trip 
-@router.post("/courier/{trip_id}/confirm", response_model=APIResponse)
+@router.post("/user/courier/{trip_id}/confirm", response_model=APIResponse)
 async def confirm_courier_trip(
     trip_id: str,
     payload: CourierTripConfirm,
@@ -637,7 +692,7 @@ async def confirm_courier_trip(
         )
 
 # -----tracking endpoint is below, which returns live driver coordinates and van details
-@router.get("/courier/{trip_id}/tracking", response_model=APIResponse)
+@router.get("/user/courier/{trip_id}/tracking", response_model=APIResponse)
 async def track_courier_trip(
     trip_id: str,
     session: AsyncSession = Depends(get_session),
@@ -699,7 +754,7 @@ async def track_courier_trip(
     )
 
 # courier driver accepts trip endpoint
-@router.post("/courier_driver/{trip_id}/accept", response_model=APIResponse)
+@router.post("/driver/courier_driver/{trip_id}/accept", response_model=APIResponse)
 async def accept_courier_trip(
     trip_id: str,
     session: AsyncSession = Depends(get_session),
@@ -744,7 +799,7 @@ async def accept_courier_trip(
     )
 
 # courier driver decline/cancels trip
-@router.post("/courier_driver/{trip_id}/decline", response_model=APIResponse)
+@router.post("/driver/courier_driver/{trip_id}/decline", response_model=APIResponse)
 async def decline_courier_trip(
     trip_id: str,
     session: AsyncSession = Depends(get_session),
@@ -802,16 +857,67 @@ async def decline_courier_trip(
             detail="You cannot decline a trip that is already in progress or completed."
         )
 
+# driver completes trip endpoint
+# @router.post("/driver/courier_driver/{trip_id}/complete", response_model=APIResponse)
+# async def complete_courier_trip(
+#     trip_id: str,
+#     session: AsyncSession = Depends(get_session),
+#     current_driver = Depends(get_current_driver)
+# )-> APIResponse:
+#     """
+#     Driver clicks 'Complete Delivery'. 
+#     Verifies payment is settled before allowing completion.
+#     """
+#     trip = await session.get(CourierTrip, trip_id)
+#     if not trip or str(trip.driver_id) != str(current_driver.id):
+#         raise HTTPException(status_code=404, detail="Trip not found.")
+        
+#     if trip.status == CourierStatus.COMPLETED:
+#         raise HTTPException(status_code=400, detail="Trip is already completed.")
 
-@router.post("/courier_driver/{trip_id}/complete", response_model=APIResponse)
+#     # 1. SECURITY LOCK: Do not allow completion if Card payment is still pending
+#     if trip.payment_method == "CARD" and trip.payment_status != "PAID":
+#          raise HTTPException(
+#              status_code=402, # Payment Required
+#              detail="Customer card payment is still pending. Do not release cargo yet."
+#          )
+
+#     # 2. Process Cash Trips (Log the commission debt)
+#     if trip.payment_method == "CASH":
+#         trip.payment_status = "DEBT_LOGGED"
+        
+#         ledger_entry = CourierDriverHistory(
+#             driver_id=trip.driver_id,
+#             trip_id=trip.id,
+#             entry_type=CourierLedgerEntryType.COMMISSION_DEBT,
+#             amount=-float(trip.platform_fee),
+#             description=f"Commission debt for Cash Trip #{str(trip.id)[:8]}"
+#         )
+#         session.add(ledger_entry)
+
+#     # 3. Finalize the Trip
+#     trip.status = CourierStatus.COMPLETED
+#     trip.completed_at = get_utc_now_naive()
+    
+#     session.add(trip)
+#     await session.commit()
+    
+#     return APIResponse(
+#         success=True, 
+#         message="Delivery completed successfully!",
+#         data={"trip_id": str(trip.id), "status": trip.status}
+#     )
+
+
+@router.post("/driver/courier_driver/{trip_id}/complete", response_model=APIResponse)
 async def complete_courier_trip(
     trip_id: str,
+    payload: DriverLocationPayload,
     session: AsyncSession = Depends(get_session),
     current_driver = Depends(get_current_driver)
-)-> APIResponse:
+) -> APIResponse:
     """
-    Driver clicks 'Complete Delivery'. 
-    Verifies payment is settled before allowing completion.
+    Driver clicks 'Complete Delivery'. Requires being within 50 meters of drop-off.
     """
     trip = await session.get(CourierTrip, trip_id)
     if not trip or str(trip.driver_id) != str(current_driver.id):
@@ -820,27 +926,46 @@ async def complete_courier_trip(
     if trip.status == CourierStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Trip is already completed.")
 
-    # 1. SECURITY LOCK: Do not allow completion if Card payment is still pending
+    # Geofence Validation
+    distance = calculate_distance_meters(
+        payload.latitude, payload.longitude,
+        trip.dropoff_latitude, trip.dropoff_longitude
+    )
+    
+    MAX_COMPLETION_RADIUS_METERS = 50.0
+    if distance > MAX_COMPLETION_RADIUS_METERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot complete trip. You are {round(distance)}m away from the drop-off location."
+        )
+
+    user = await session.get(User, trip.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
     if trip.payment_method == "CARD" and trip.payment_status != "PAID":
          raise HTTPException(
-             status_code=402, # Payment Required
+             status_code=402,
              detail="Customer card payment is still pending. Do not release cargo yet."
          )
 
-    # 2. Process Cash Trips (Log the commission debt)
     if trip.payment_method == "CASH":
         trip.payment_status = "DEBT_LOGGED"
+        total_owed_to_platform = float(trip.platform_fee) + float(trip.applied_debt)
         
         ledger_entry = CourierDriverHistory(
             driver_id=trip.driver_id,
             trip_id=trip.id,
             entry_type=CourierLedgerEntryType.COMMISSION_DEBT,
-            amount=-float(trip.platform_fee),
-            description=f"Commission debt for Cash Trip #{str(trip.id)[:8]}"
+            amount=-total_owed_to_platform,
+            description=f"Commission & recovered debt for Cash Trip #{str(trip.id)[:8]}"
         )
         session.add(ledger_entry)
 
-    # 3. Finalize the Trip
+    if trip.applied_debt > 0:
+        user.pending_cancellation_fee = max(0.0, float(user.pending_cancellation_fee) - float(trip.applied_debt))
+        session.add(user)
+
     trip.status = CourierStatus.COMPLETED
     trip.completed_at = get_utc_now_naive()
     
@@ -850,57 +975,145 @@ async def complete_courier_trip(
     return APIResponse(
         success=True, 
         message="Delivery completed successfully!",
-        data={"trip_id": str(trip.id), "status": trip.status}
+        data={
+            "trip_id": str(trip.id), 
+            "status": trip.status,
+            "cleared_user_debt": trip.applied_debt
+        }
     )
 
 
-@router.post("/{trip_id}/arrive", response_model=APIResponse)
+# driver arrives at drop-off endpoint, triggers 2-minute auto-completion timer
+@router.post("/driver/courier_driver/{trip_id}/arrive", response_model=APIResponse)
 async def driver_arrived_at_dropoff(
     trip_id: str,
+    payload: DriverLocationPayload,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     current_driver = Depends(get_current_driver)
-)-> APIResponse:
+) -> APIResponse:
     """
-    Marks the trip as ARRIVED when the driver reaches the drop-off location.
-    Triggers the 2-minute auto-completion timer.
+    Marks trip as ARRIVED only if the driver is within 50 meters of the drop-off destination.
     """
-    # 1. Fetch the trip from the database
     trip = await session.get(CourierTrip, trip_id)
-
-    # 2. Check if the trip exists
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found.")
 
-    # 3. Security: Ensure this trip belongs to the driver trying to update it
     if str(trip.driver_id) != str(current_driver.id):
         raise HTTPException(status_code=403, detail="You are not assigned to this trip.")
 
-    # 4. State validation: Ensure the trip isn't already finished or cancelled
     if trip.status in [CourierStatus.COMPLETED, CourierStatus.CANCELLED]:
+        raise HTTPException(status_code=400, detail=f"Cannot mark arrival. Trip is {trip.status}.")
+
+    # Geofence Validation (50-meter standard radius)
+    distance = calculate_distance_meters(
+        payload.latitude, payload.longitude,
+        trip.dropoff_latitude, trip.dropoff_longitude
+    )
+    
+    MAX_ARRIVAL_RADIUS_METERS = 50.0
+    if distance > MAX_ARRIVAL_RADIUS_METERS:
         raise HTTPException(
-            status_code=400, 
-            detail=f"Cannot mark arrival. Trip is currently {trip.status}."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You are too far from the drop-off location ({round(distance)}m away). Move within {int(MAX_ARRIVAL_RADIUS_METERS)}m to mark arrival."
         )
 
-    # Prevent duplicate triggers if they tap the button twice
     if trip.status == CourierStatus.ARRIVED:
         return APIResponse(success=True, message="Already marked as arrived.")
-    
+
     trip.status = CourierStatus.ARRIVED
     session.add(trip)
     await session.commit()
     await session.refresh(trip)
 
-    # Start the 2-minute countdown clock
     background_tasks.add_task(
         wait_and_auto_complete_courier_trip,
         trip_id=str(trip.id),
-        session_factory=async_session_factory # Pass your session factory
+        session_factory=async_session_factory
     )
 
     return APIResponse(
-        success=True, 
-        message="Arrived at drop-off. Please collect payment if CASH.",
-        data={"trip_id": str(trip.id), "status": trip.status}
+        success=True,
+        message="Arrived at drop-off verified.",
+        data={"trip_id": str(trip.id), "status": trip.status, "distance_meters": round(distance, 1)}
+    )
+
+from enum import Enum
+class UserCancelReason(str, Enum):
+    DRIVER_ASKED_TO_CANCEL = "DRIVER_ASKED_TO_CANCEL"
+    DRIVER_DEMANDED_EXTRA_CASH = "DRIVER_DEMANDED_EXTRA_CASH"
+    DRIVER_NOT_MOVING = "DRIVER_NOT_MOVING"
+    TOO_LONG_ETA = "TOO_LONG_ETA"
+    CHANGE_OF_PLANS = "CHANGE_OF_PLANS"
+    WRONG_ADDRESS = "WRONG_ADDRESS"
+
+# Reasons where the driver is at fault — User must NEVER be penalized
+DRIVER_FAULT_REASONS = {
+    UserCancelReason.DRIVER_ASKED_TO_CANCEL,
+    UserCancelReason.DRIVER_DEMANDED_EXTRA_CASH,
+    UserCancelReason.DRIVER_NOT_MOVING,
+    UserCancelReason.TOO_LONG_ETA,
+}
+
+CANCELLATION_FEE_NGN = Decimal("100.00")
+
+# cancel trip endpoint for users
+@router.post("/{trip_id}/cancel", response_model=APIResponse)
+async def cancel_user_trip(
+    trip_id: str,
+    payload: TripCancelRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> APIResponse:
+    """
+    Cancels a trip with Nigerian-market guardrails protecting riders 
+    from driver-induced cancellations.
+    """
+    statement = select(CourierTrip).where(
+        CourierTrip.id == trip_id,
+        CourierTrip.user_id == current_user.id
+    )
+    result = await session.exec(statement)
+    trip = result.first()
+
+    if not trip:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Trip not found."
         )
+
+    if trip.status in [TripStatus.COMPLETED, TripStatus.CANCELLED]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Trip is already {trip.status.value.lower()}."
+        )
+
+    trip.status = TripStatus.CANCELLED
+    trip.cancellation_reason = payload.reason_code
+    trip.cancelled_by = "USER"
+    trip.cancelled_at = datetime.now(timezone.utc)
+
+    # Market Guardrail Logic
+    if payload.reason_code in DRIVER_FAULT_REASONS:
+        # Flag the driver internally for audit / acceptance rate penalty
+        trip.driver_flagged_for_cancellation = True
+    else:
+        # Only check for late cancellation fee if driver was assigned and arrived
+        if trip.driver_id and trip.status == TripStatus.DRIVER_ARRIVED:
+            # Append ₦500 to user's next trip ledger instead of instant card debit
+            current_user.pending_cancellation_fee += CANCELLATION_FEE_NGN
+            session.add(current_user)
+
+    session.add(trip)
+    await session.commit()
+    await session.refresh(trip)
+
+    return APIResponse(
+        success=True,
+        message="Trip cancelled successfully.",
+        data={
+            "trip_id": str(trip.id),
+            "status": trip.status,
+            "cancelled_at": trip.cancelled_at.isoformat()
+        }
+    )

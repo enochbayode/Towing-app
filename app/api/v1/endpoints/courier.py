@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core import security
 
 # Import the schemas we just built
-from app.schemas.courier import CourierTripCreate, CourierTripResponse
+from app.schemas.courier import CourierTripCreate, CourierTripResponse, TripCancelRequest
 from app.models.courier_driver import CourierDriver
 from app.models.courier_vehicle import CourierVehicle
 from app.schemas.courier_driver import CourierVehicleCreate
@@ -177,13 +177,6 @@ async def courier_login(
             detail="Please verify your email before logging in."
         )
 
-    # Issue token containing the courier's explicit role
-    # access_token = create_access_token(
-    #     data={
-    #         "subject": str(driver.id), 
-    #         "role": "courier_driver"
-    #     }
-    # )
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
     access_token = security.create_access_token(
@@ -547,7 +540,7 @@ async def update_bank_details(
         }
     )
 
-
+# delete bank details endpoint
 @router.delete("/bank-details", response_model=APIResponse)
 async def delete_bank_details(
     session: AsyncSession = Depends(get_session),
@@ -569,3 +562,4 @@ async def delete_bank_details(
         message="Bank account details removed successfully.",
         data=None
     )
+

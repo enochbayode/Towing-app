@@ -76,6 +76,9 @@ class CourierTrip(SQLModel, table=True):
     paystack_reference: Optional[str] = Field(default=None)
     payment_status: str = Field(default="PENDING", description="PENDING, PAID, or FAILED")
 
+    # The historical record of debt collected during this specific trip
+    applied_debt: float = Field(default=0.0, description="Amount of previous debt rolled into this trip")
+
     # Timestamps
     created_at: datetime = Field(default_factory=get_utc_now_naive)
     started_loading_at: Optional[datetime] = None
