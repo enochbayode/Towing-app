@@ -53,8 +53,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-MAX_COMMISSION_DEBT_ALLOWED = settings.MAX_COMMISSION_DEBT_ALLOWED  # e.g., -10000.00 NGN
-
 # ==========================================
 # 1. ESTIMATE & CONFIRMATION FLOW
 # ==========================================
@@ -230,7 +228,7 @@ async def accept_trip(
     current_balance = await get_company_ledger_balance(session, current_driver.company_id)
     
     # if current_balance <= MAX_COMMISSION_DEBT_ALLOWED:
-    if current_balance < 0 and abs(current_balance) >= MAX_COMMISSION_DEBT_ALLOWED:
+    if current_balance < 0 and abs(current_balance) >= settings.MAX_DEBT_CEILING_ALLOWED:
         # We use abs() to format "-10000" into a readable "10,000 NGN" for the error message
         debt_amount = abs(current_balance)
         raise HTTPException(

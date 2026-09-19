@@ -45,8 +45,6 @@ class Settings(BaseSettings):
 
     PAYSTACK_SECRET_KEY: str
 
-    MAX_COMMISSION_DEBT_ALLOWED: float = 15000.00  # Default maximum debt allowed for a company in NGN
-
     # MAX_COMMISSION_DEBT: float = 15000.00
 
     # Courier Pricing Config
@@ -63,6 +61,8 @@ class Settings(BaseSettings):
     COURIER_MULT_SPRINTER: float = 1.0
     COURIER_MULT_BOX_TRUCK: float = 2.5
 
+    # Debt Ceiling for Companies: If a company's debt exceeds this limit, they will be suspended from using the platform until they clear their dues.
+    MAX_DEBT_CEILING_ALLOWED: float = 100000.00  # NGN 100,000.00
 
     # --- CORS ---
     # This parses the string in .env into a real Python list

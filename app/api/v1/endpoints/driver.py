@@ -125,7 +125,8 @@ async def login_driver(
         email=driver.email,
         phone_number=driver.phone_number,
         status=driver.status,
-        is_verified=driver.is_verified
+        is_verified=driver.is_verified,
+        current_vehicle_id=str(driver.current_vehicle_id) if driver.current_vehicle_id else None
     )
 
     return APIResponse(

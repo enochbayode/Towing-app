@@ -31,7 +31,7 @@ from app.schemas.user import APIResponse
 from app.schemas.driver import DriverStatusUpdate
 from app.schemas.vehicle import VehicleCreate, VehicleUpdate
 from app.services.paystack_integration import create_paystack_subaccount, initialize_debt_settlement
-
+from app.core.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -291,6 +291,7 @@ async def update_payment_account(
         data=existing_account
     )
 
+
 # Dashboard metrics for the company
 @router.get("/dashboard", response_model=APIResponse)
 async def get_company_dashboard(
@@ -347,7 +348,7 @@ async def get_company_dashboard(
             "financials": {
                 "total_earnings_ngn": float(total_earnings),
                 "current_ledger_balance_ngn": float(current_balance),
-                "is_suspended": current_balance <= Decimal("-10000.00") # Tied to your debt enforcer limit!
+                "is_suspended": current_balance <= -(settings.MAX_DEBT_CEILING_ALLOWED) # Tied to your debt enforcer limit!
             },
             "operations": {
                 "total_completed_trips": total_trips,

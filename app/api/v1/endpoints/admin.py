@@ -156,7 +156,8 @@ async def get_company_drivers(
             email=d.email,
             phone_number=d.phone_number,
             status=d.status,
-            is_verified=d.is_verified
+            is_verified=d.is_verified,
+            current_vehicle_id=str(d.current_vehicle_id) if d.current_vehicle_id else None
         ) for d in drivers
     ]
 
