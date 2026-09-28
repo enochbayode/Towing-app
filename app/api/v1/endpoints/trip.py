@@ -43,10 +43,16 @@ from app.schemas.user import APIResponse
 from app.schemas.courier import CourierTripConfirm, PaymentMethod, DriverLocationPayload
 from app.services.courier_pricing_engine import calculate_courier_price
 from app.services.pricing_engine import calculate_tow_cost
-from app.utils.courier_dispatch_worker import broadcast_courier_trip_to_drivers
-from app.utils.courier_dispatch_worker import wait_and_auto_complete_courier_trip
+
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from app.utils.dispatch_worker import broadcast_trip_to_drivers, timeout_pending_trip, wait_and_auto_complete_trip
+from app.utils.courier_dispatch_worker import wait_and_auto_complete_courier_trip, timeout_pending_courier_trip, broadcast_courier_trip_to_drivers
 from app.utils.geofence import calculate_distance_meters
 from app.core.config import settings
+from app.services.websocket_manager import ws_manager
+from app.utils.notification import notification_service
 
 
 router = APIRouter()
@@ -111,6 +117,7 @@ async def get_trip_estimate(
 @router.post("/user/confirm", response_model=APIResponse)
 async def confirm_and_request_trip(
     payload: TripConfirmSchema,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ) -> APIResponse:
@@ -137,6 +144,20 @@ async def confirm_and_request_trip(
         trip.status = TripStatus.SEARCHING
         session.add(trip)
         await session.commit()
+
+         # Start the 3-minute countdown clock in the background
+        background_tasks.add_task(
+            timeout_pending_trip,
+            trip_id=trip.id,
+            session_factory=async_session_factory  # Passed so the worker can open its own DB connection
+        )
+
+        # broadcast to nearby drivers in the background
+        background_tasks.add_task(
+            broadcast_trip_to_drivers,
+            trip_id=trip.id,
+            session_factory=async_session_factory
+        )
 
         return APIResponse(
             success=True,
@@ -169,6 +190,19 @@ async def confirm_and_request_trip(
         session.add(trip)
         await session.commit()
 
+        # 4. Start the 3-minute countdown clock in the background
+        background_tasks.add_task(
+            timeout_pending_trip,
+            trip_id=trip.id,
+            session_factory=async_session_factory  # Passed so the worker can open its own DB connection
+        )
+
+        background_tasks.add_task(
+            broadcast_trip_to_drivers,
+            trip_id=trip.id,
+            session_factory=async_session_factory
+        )
+
         return APIResponse(
             success=True,
             message="Trip confirmed. Proceed to complete secure card payment.",
@@ -196,6 +230,38 @@ async def get_company_ledger_balance(
     
     return Decimal(str(balance))
 
+# user confirms that the driver has arrived at the pickup location, unlocking the "Start Trip" button for the driver
+@router.post("/user/{trip_id}/confirm-arrival", response_model=APIResponse)
+async def user_confirms_driver_arrival(
+    trip_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> APIResponse:
+    trip = await session.get(Trip, trip_id)
+    
+    if not trip or str(trip.user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Unauthorized.")
+        
+    if trip.status != TripStatus.ARRIVED:
+        raise HTTPException(status_code=400, detail="Driver has not arrived yet.")
+        
+    if trip.arrival_confirmed:
+        return APIResponse(success=True, message="Arrival already confirmed.")
+
+    # Manual user confirmation
+    trip.arrival_confirmed = True
+    trip.arrival_auto_confirmed = False
+    session.add(trip)
+    await session.commit()
+
+    # Immediately tell the driver they are cleared to start
+    user_confirmed_event = {
+        "event": "USER_CONFIRMED_ARRIVAL",
+        "data": {"trip_id": str(trip.id), "message": "The user sees you."}
+    }
+    await ws_manager.send_trip_event(trip_id=trip.id, payload=user_confirmed_event)
+
+    return APIResponse(success=True, message="Arrival confirmed.")
 
 # ==========================================
 # 2. DRIVER DISPATCH & ACCEPTANCE
@@ -229,7 +295,7 @@ async def accept_trip(
     
     # if current_balance <= MAX_COMMISSION_DEBT_ALLOWED:
     if current_balance < 0 and abs(current_balance) >= settings.MAX_DEBT_CEILING_ALLOWED:
-        # We use abs() to format "-10000" into a readable "10,000 NGN" for the error message
+        # We use abs() to format "-100000" into a readable "100,000 NGN" for the error message
         debt_amount = abs(current_balance)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -337,8 +403,213 @@ async def wait_and_auto_complete_trip(trip_id: UUID, session_factory):
             logger.info(f"Timer expired for Trip {trip_id}. Triggering auto-completion...")
             await execute_trip_completion(trip_id=trip.id, session=session)
 
-#------driver location tracking and geofence logic is below, followed by arrival confirmation and dispute endpoints
+# =========================================
+async def wait_and_auto_confirm_arrival(
+    trip_id: UUID, 
+    session_factory: async_sessionmaker[AsyncSession]
+):
+    # Wait exactly 2 minutes (120 seconds)
+    await asyncio.sleep(120)
+    
+    async with session_factory() as session:
+        trip = await session.get(Trip, trip_id)
+        
+        # If the trip is still in ARRIVED state and the user hasn't manually confirmed
+        if trip and trip.status == TripStatus.ARRIVED and not trip.arrival_confirmed:
+            trip.arrival_confirmed = True
+            trip.arrival_auto_confirmed = True
+            session.add(trip)
+            await session.commit()
+            
+            # Broadcast to the driver so their "Start Trip" button unlocks
+            auto_confirm_event = {
+                "event": "ARRIVAL_AUTO_CONFIRMED",
+                "data": {
+                    "trip_id": str(trip.id), 
+                    "message": "User arrival auto-confirmed by system."
+                }
+            }
+            await ws_manager.send_trip_event(trip_id=trip.id, payload=auto_confirm_event)
+
+#=================== Background task ends here============================
+
+# driver arrives at where the user's vehicle is located and starts the 2-minute timer for user confirmation
+# @router.post("/driver/{trip_id}/arrive", response_model=APIResponse)
+# async def driver_arrived_at_pickup(
+#     trip_id: UUID,
+#     driver_lat: float,  # Sent from the driver's phone at the moment they press the button
+#     driver_lng: float,
+#     background_tasks: BackgroundTasks,
+#     session: AsyncSession = Depends(get_session),
+#     current_driver: Driver = Depends(get_current_driver)  # Assuming driver auth
+# ) -> APIResponse:
+#     trip = await session.get(Trip, trip_id)
+    
+#     if not trip or str(trip.driver_id) != str(current_driver.id):
+#         raise HTTPException(status_code=403, detail="Unauthorized for this trip.")
+
+#     if trip.status != TripStatus.EN_ROUTE:
+#         raise HTTPException(status_code=400, detail=f"Cannot arrive from state {trip.status}")
+
+#     # 1. Strict Pickup Geofence Check (50 meters)
+#     distance_to_pickup = calculate_distance_meters(
+#         driver_lat, driver_lng, 
+#         trip.pickup_lat, trip.pickup_lng
+#     )
+
+#     if distance_to_pickup > 50.0:
+#         raise HTTPException(
+#             status_code=400, 
+#             detail=f"You are {int(distance_to_pickup)}m away from the pickup location. Get closer to arrive."
+#         )
+
+#     # 2. Update Status
+#     trip.status = TripStatus.ARRIVED
+#     session.add(trip)
+#     await session.commit()
+
+#     # Trigger the 2-minute auto-confirm countdown
+#     background_tasks.add_task(
+#         wait_and_auto_confirm_arrival, 
+#         trip_id, 
+#         async_session_factory
+#     )
+
+#     # 3. Alert the User
+#     arrival_event = {
+#         "event": "DRIVER_ARRIVED",
+#         "data": {"trip_id": str(trip.id), "message": "Your driver is outside."}
+#     }
+#     await ws_manager.send_trip_event(trip_id=trip.id, payload=arrival_event)
+    
+#     # TODO: Trigger push notification to user ("Driver is outside!")
+
+#     return APIResponse(
+#         success=True, 
+#         message="Arrival confirmed."
+#     )
+
+
 @router.post("/driver/{trip_id}/arrive", response_model=APIResponse)
+async def driver_arrived_at_pickup(
+    trip_id: UUID,
+    driver_lat: float,  # Sent from the driver's phone at the moment they press the button
+    driver_lng: float,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+    current_driver: Driver = Depends(get_current_driver)  # Assuming driver auth
+) -> APIResponse:
+    trip = await session.get(Trip, trip_id)
+    
+    if not trip or str(trip.driver_id) != str(current_driver.id):
+        raise HTTPException(status_code=403, detail="Unauthorized for this trip.")
+
+    if trip.status != TripStatus.EN_ROUTE:
+        raise HTTPException(status_code=400, detail=f"Cannot arrive from state {trip.status}")
+
+    # 1. Strict Pickup Geofence Check (50 meters)
+    distance_to_pickup = calculate_distance_meters(
+        driver_lat, driver_lng, 
+        trip.pickup_lat, trip.pickup_lng
+    )
+    
+    # Enforce the radius to prevent false arrivals
+    if distance_to_pickup > 50:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Must be within 50 meters of pickup. Currently {distance_to_pickup:.1f}m away."
+        )
+
+    # 2. Update Trip State and Timestamps
+    trip.status = TripStatus.ARRIVED
+    trip.arrived_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    
+    session.add(trip)
+    await session.commit()
+    await session.refresh(trip)
+
+    # 3. Fire Real, Uncommented Background Tasks
+
+    # Task A: 2-minute countdown. If user doesn't confirm seeing the driver, the system forces it.
+    background_tasks.add_task(
+        wait_and_auto_confirm_arrival, 
+        trip_id=trip.id, 
+        session_factory=async_session_factory
+    )
+
+    # Task B: Real-time WebSocket payload to update the user's map UI instantly
+    arrival_event = {
+        "event": "DRIVER_ARRIVED_AWAITING_CONFIRMATION",
+        "data": {
+            "trip_id": str(trip.id), 
+            "message": "Your driver is outside. Do you see them?"
+        }
+    }
+
+    background_tasks.add_task(
+        ws_manager.send_trip_event,
+        trip_id=trip.id,
+        payload=arrival_event
+    )
+
+    # Task C: Firebase Push Notification to wake up the user's phone if the app is closed
+    background_tasks.add_task(
+        notification_service.send_user_push,
+        user_id=str(trip.user_id),
+        title="Driver Arrived",
+        body="Your driver is at the pickup location. Please confirm you see them in the app.",
+        data={"type": "DRIVER_ARRIVED", "trip_id": str(trip.id)},
+        session=session
+    )
+
+    return APIResponse(
+        success=True, 
+        message="Arrival logged. Waiting for user confirmation.",
+        data={"trip_id": str(trip.id), "status": trip.status}
+    )
+
+# driver starts the trip after arriving at the pickup location
+@router.post("/driver/{trip_id}/start", response_model=APIResponse)
+async def driver_start_trip(
+    trip_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_driver: Driver = Depends(get_current_driver)
+) -> APIResponse:
+    trip = await session.get(Trip, trip_id)
+    
+    if not trip or str(trip.driver_id) != str(current_driver.id):
+        raise HTTPException(status_code=403, detail="Unauthorized for this trip.")
+
+    # Driver MUST have arrived first
+    if trip.status != TripStatus.ARRIVED:
+        raise HTTPException(status_code=400, detail="You must arrive at pickup before starting the trip.")
+
+    # Ensure arrival was confirmed (either manually or by the 2-minute timer)
+    if not trip.arrival_confirmed:
+        raise HTTPException(
+            status_code=400, 
+            detail="Cannot start trip. Waiting for user confirmation or 2-minute timer."
+        )
+
+    # 1. Update Status to moving
+    trip.status = TripStatus.EN_ROUTE
+    session.add(trip)
+    await session.commit()
+
+    # 2. Alert the User
+    start_event = {
+        "event": "TRIP_STARTED",
+        "data": {"trip_id": str(trip.id), "message": "Heading to destination."}
+    }
+    await ws_manager.send_trip_event(trip_id=trip.id, payload=start_event)
+
+    return APIResponse(
+        success=True, 
+        message="Trip started. Navigate to destination."
+    )
+
+# driver arive at the designated location and start the 2-minute timer for user confirmation
+@router.post("/driver/{trip_id}/designated-arrival", response_model=APIResponse)
 async def driver_arrive_at_destination(
     trip_id: UUID,
     background_tasks: BackgroundTasks,
@@ -364,7 +635,11 @@ async def driver_arrive_at_destination(
     session.add(trip)
     await session.commit()
 
-    background_tasks.add_task(wait_and_auto_complete_trip, trip.id, async_session_factory)
+    background_tasks.add_task(
+        wait_and_auto_complete_trip, 
+        trip.id, 
+        async_session_factory
+    )
 
     return APIResponse(
         success=True,
@@ -492,47 +767,7 @@ async def get_trip_tracking_info(
         data=tracking_data.model_dump()
     )
 
-# estimate courier price
-# @router.post("/user/courier/estimate-price", response_model=APIResponse)
-# async def request_courier_trip(
-#     trip_in: CourierTripCreate,
-#     session: AsyncSession = Depends(get_session),
-#     current_user: User = Depends(get_current_user)
-# )-> APIResponse:
-#     """
-#     Calculates pricing and creates a DRAFT courier trip. 
-#     Does not ping drivers yet.
-#     """
-#     # 1. Calculate the dynamic pricing based on user inputs
-#     pricing = calculate_courier_price(trip_in)
 
-#     # 2. Build the database model
-#     # We NO LONGER exclude requested_vehicle_type because the DB needs it
-#     new_trip = CourierTrip(
-#         **trip_in.model_dump(), 
-#         user_id=current_user.id,
-#         status=CourierStatus.DRAFT, # <--- Saved as a draft quote
-#         total_cost=pricing["total_cost"],
-#         platform_fee=pricing["platform_fee"],
-#         driver_payout=pricing["driver_payout"]
-#         # created_at=get_utc_now_naive()
-#     )
-
-#     # 3. Save to database
-#     session.add(new_trip)
-#     await session.commit()
-#     await session.refresh(new_trip)
-
-#     # 5. Return the full response so the frontend can show the invoice
-#     return APIResponse(
-#         success=True,
-#         message="Courier estimate generated. Please confirm to request a van.",
-#         data={
-#             "trip_id": str(new_trip.id),
-#             "pricing": pricing,
-#             "status": new_trip.status
-#         }
-#     )
 
 @router.post("/user/courier/estimate-price", response_model=APIResponse)
 async def request_courier_trip(
@@ -612,11 +847,18 @@ async def confirm_courier_trip(
 
     # --- CASH PAYMENT FLOW ---
     if payload.payment_method == PaymentMethod.CASH:
-        trip.status = CourierStatus.PENDING # Dispatch van!
+        trip.status = CourierStatus.SEARCHING # Dispatch van!
         session.add(trip)
         await session.commit()
 
-        # 3. (Future) Trigger Matchmaking / WebSockets
+        # 3. Start the 3-minute countdown clock in the background
+        background_tasks.add_task(
+            timeout_pending_courier_trip,
+            trip_id=trip.id,
+            session_factory=async_session_factory  # Passed so the worker can open its own DB connection
+        )
+
+        # 4. (Future) Trigger Matchmaking / WebSockets
         background_tasks.add_task(
             broadcast_courier_trip_to_drivers,
             trip_id=str(trip.id)
@@ -637,14 +879,6 @@ async def confirm_courier_trip(
     # --- CARD PAYMENT FLOW (FLEXIBLE / PAY LATER) ---
     else:
         # Generate the invoice link, but don't force them to pay it immediately
-        # payment_data = await initialize_paystack_transaction(
-        #     email=current_user.email,
-        #     total_cost_ngn=float(trip.total_cost),
-        #     platform_fee_ngn=float(trip.platform_fee),
-        #     trip_id=str(trip.id)
-        # )
-
-    
         payment_data = await initialize_courier_transaction(
             email=current_user.email,
             total_cost_ngn=float(trip.total_cost),
@@ -664,17 +898,15 @@ async def confirm_courier_trip(
         await session.commit()
 
         background_tasks.add_task(
+            timeout_pending_courier_trip,
+            trip_id=trip.id,
+            session_factory=async_session_factory  # Passed so the worker can open its own DB connection
+        )
+
+        background_tasks.add_task(
             broadcast_courier_trip_to_drivers,
             trip_id=str(trip.id)
         )
-        
-        # 4. (Future) Trigger Matchmaking / WebSockets
-            # ping_nearby_vans(
-            #     trip_id=trip.id, 
-            #     lat=trip.pickup_lat, 
-            #     lng=trip.pickup_lng, 
-            #     vehicle_type=trip.requested_vehicle_type
-            # )
 
         return APIResponse(
             success=True,
@@ -855,57 +1087,6 @@ async def decline_courier_trip(
             detail="You cannot decline a trip that is already in progress or completed."
         )
 
-# driver completes trip endpoint
-# @router.post("/driver/courier_driver/{trip_id}/complete", response_model=APIResponse)
-# async def complete_courier_trip(
-#     trip_id: str,
-#     session: AsyncSession = Depends(get_session),
-#     current_driver = Depends(get_current_driver)
-# )-> APIResponse:
-#     """
-#     Driver clicks 'Complete Delivery'. 
-#     Verifies payment is settled before allowing completion.
-#     """
-#     trip = await session.get(CourierTrip, trip_id)
-#     if not trip or str(trip.driver_id) != str(current_driver.id):
-#         raise HTTPException(status_code=404, detail="Trip not found.")
-        
-#     if trip.status == CourierStatus.COMPLETED:
-#         raise HTTPException(status_code=400, detail="Trip is already completed.")
-
-#     # 1. SECURITY LOCK: Do not allow completion if Card payment is still pending
-#     if trip.payment_method == "CARD" and trip.payment_status != "PAID":
-#          raise HTTPException(
-#              status_code=402, # Payment Required
-#              detail="Customer card payment is still pending. Do not release cargo yet."
-#          )
-
-#     # 2. Process Cash Trips (Log the commission debt)
-#     if trip.payment_method == "CASH":
-#         trip.payment_status = "DEBT_LOGGED"
-        
-#         ledger_entry = CourierDriverHistory(
-#             driver_id=trip.driver_id,
-#             trip_id=trip.id,
-#             entry_type=CourierLedgerEntryType.COMMISSION_DEBT,
-#             amount=-float(trip.platform_fee),
-#             description=f"Commission debt for Cash Trip #{str(trip.id)[:8]}"
-#         )
-#         session.add(ledger_entry)
-
-#     # 3. Finalize the Trip
-#     trip.status = CourierStatus.COMPLETED
-#     trip.completed_at = get_utc_now_naive()
-    
-#     session.add(trip)
-#     await session.commit()
-    
-#     return APIResponse(
-#         success=True, 
-#         message="Delivery completed successfully!",
-#         data={"trip_id": str(trip.id), "status": trip.status}
-#     )
-
 
 @router.post("/driver/courier_driver/{trip_id}/complete", response_model=APIResponse)
 async def complete_courier_trip(
@@ -1053,7 +1234,6 @@ DRIVER_FAULT_REASONS = {
     UserCancelReason.TOO_LONG_ETA,
 }
 
-CANCELLATION_FEE_NGN = Decimal("100.00")
 
 # cancel trip endpoint for users
 @router.post("/{trip_id}/cancel", response_model=APIResponse)
@@ -1071,7 +1251,7 @@ async def cancel_user_trip(
         CourierTrip.id == trip_id,
         CourierTrip.user_id == current_user.id
     )
-    result = await session.exec(statement)
+    result = await session.execute(statement)
     trip = result.first()
 
     if not trip:
@@ -1099,7 +1279,7 @@ async def cancel_user_trip(
         # Only check for late cancellation fee if driver was assigned and arrived
         if trip.driver_id and trip.status == TripStatus.DRIVER_ARRIVED:
             # Append ₦500 to user's next trip ledger instead of instant card debit
-            current_user.pending_cancellation_fee += CANCELLATION_FEE_NGN
+            current_user.pending_cancellation_fee += settings.CANCELLATION_FEE_NGN
             session.add(current_user)
 
     session.add(trip)

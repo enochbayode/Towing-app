@@ -34,5 +34,31 @@ class ConnectionManager:
                 except Exception as e:
                     logger.error(f"Failed to send message to a client: {e}")
 
+    async def send_trip_event(self, trip_id: UUID, payload: dict) -> bool:
+        """
+        Broadcasts an event to all active WebSockets connected to a specific trip.
+        Returns True if at least one socket received the message.
+        """
+        connections = self.active_connections.get(trip_id, [])
+        if not connections:
+            return False
+
+        dead_connections: list[WebSocket] = []
+        delivered: bool = False
+
+        for connection in connections:
+            try:
+                await connection.send_json(payload)
+                delivered = True
+            except Exception as err:
+                logger.error(f"Error sending WS payload to trip {trip_id}: {str(err)}")
+                dead_connections.append(connection)
+
+        # Cleanup dropped connections safely
+        for dead_conn in dead_connections:
+            self.disconnect(dead_conn, trip_id)
+
+        return delivered
+
 # Create a single global instance to be used across the app
-manager = ConnectionManager()
+ws_manager = ConnectionManager()

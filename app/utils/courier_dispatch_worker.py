@@ -1,3 +1,4 @@
+from uuid import UUID
 import logging
 from sqlmodel import select
 from app.db.session import async_session_factory
@@ -15,6 +16,9 @@ from app.models.user import User
 # Add these imports at the top if they aren't there
 from app.models.courier import CourierTrip, CourierStatus
 from app.services.dispatch import find_nearby_courier_drivers
+from app.utils.notification import notification_service
+
+from app.services.websocket_manager import ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -79,48 +83,28 @@ async def broadcast_courier_trip_to_drivers(trip_id: str):
             session.add(trip)
             await session.commit()
             
-            # TODO: Send FCM Push Notification to the User: "Sorry, all our vans are currently busy."
+            # TODO: Send a push notification to the user that no vans were available and their trip was cancelled.
 
-# 
-# async def wait_and_auto_complete_courier_trip(trip_id: str, session_factory):
-#     """
-#     Background Task: Waits 2 minutes after driver arrives at the drop-off.
-#     If they forget to hit 'Complete', it forces completion and logs the debt.
-#     """
-#     logger.info(f"Starting 2-minute auto-completion timer for Courier Trip {trip_id}")
-#     await asyncio.sleep(120)
-
-#     async with session_factory() as session:
-#         trip = await session.get(CourierTrip, trip_id)
-        
-#         # If it hasn't been completed manually yet...
-#         if trip and trip.status == CourierStatus.ARRIVED:
-#             logger.info(f"Timer expired for Courier Trip {trip_id}. Auto-completing.")
-            
-#             # If they didn't successfully pay by card, we assume the driver took CASH
-#             if trip.payment_method != "CARD" or trip.payment_status != "PAID":
-#                 trip.payment_method = "CASH"
-#                 trip.payment_status = "DEBT_LOGGED"
-                
-#                 # Log the platform fee as debt against the courier driver
-#                 debt_entry = CourierDriverHistory(
-#                     driver_id=trip.driver_id,
-#                     trip_id=trip.id,
-#                     entry_type=CourierLedgerEntryType.COMMISSION_DEBT,
-#                     amount=-float(trip.platform_fee),
-#                     description=f"Auto-completed Commission debt for Cash Trip #{str(trip.id)[:8]}"
-#                 )
-#                 session.add(debt_entry)
-            
-#             trip.status = CourierStatus.COMPLETED
-#             trip.completed_at = get_utc_now_naive() # Naive UTC to prevent DB crashes
-            
-#             session.add(trip)
-#             await session.commit()
-            
-#             logger.info(f"Courier Trip {trip.id} auto-completed. Debt logged if cash.")
-
-
+            # 2. Fire Push Notification safely (Non-blocking failure)
+            try:
+                await notification_service.send_user_push(
+                    user_id=str(trip.user_id),
+                    title="No Vans Available",
+                    body="We couldn't find a driver near you. Your trip has been cancelled and you were not charged.",
+                    data={
+                        "type": "TRIP_CANCELLED",
+                        "trip_id": str(trip.id),
+                        "reason": "NO_DRIVERS_AVAILABLE"
+                    },
+                    session=session
+                )
+                logger.info(f"Cancellation push notification sent to user {trip.user_id} for trip {trip_id}.")
+            except Exception as push_err:
+                # Failure to deliver a push notification must NEVER break or abort the DB transaction
+                logger.error(
+                    f"Failed to deliver trip cancellation push notification for trip {trip_id}: {str(push_err)}",
+                    exc_info=True
+                )
 
 async def wait_and_auto_complete_courier_trip(
     trip_id: str,
@@ -183,3 +167,75 @@ async def wait_and_auto_complete_courier_trip(
             await session.rollback()
             # Log the exception via your monitoring tool (e.g., Sentry / Loguru)
             print(f"Background task error auto-completing trip {trip_id}: {str(e)}")
+
+
+async def timeout_pending_courier_trip(
+    trip_id: UUID,
+    session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """
+    Background worker that waits a set time (e.g., 3 minutes) after a trip is requested.
+    If no driver accepts it, it auto-cancels the trip, alerts the WebSocket room, 
+    and sends a push notification.
+    """
+    # 1. Wait for driver acceptance window (3 minutes = 180 seconds)
+    await asyncio.sleep(180)
+
+    # 2. Open an independent DB session
+    async with session_factory() as session:
+        try:
+            trip = await session.get(CourierTrip, trip_id)
+            if not trip:
+                return
+
+            # Race condition check: If driver accepted it, exit quietly.
+            if trip.status != CourierStatus.SEARCHING:
+                return
+
+            logger.warning(f"No vans accepted Courier Trip {trip_id}. Auto-cancelling.")
+
+            # 3. Update Trip State & Audit Info
+            trip.status = CourierStatus.CANCELLED
+            trip.cancellation_reason = "NO_DRIVERS_AVAILABLE"
+
+            session.add(trip)
+            await session.commit()
+
+            # 4. Construct Real-time Payload
+            cancellation_event = {
+                "event": "TRIP_CANCELLED",
+                "data": {
+                    "trip_id": str(trip.id),
+                    "status": trip.status,
+                    "reason": "NO_DRIVERS_AVAILABLE",
+                    "message": "We couldn't find a driver near you. Your trip was cancelled."
+                }
+            }
+
+            # 5. Channel 1: In-App WebSocket Broadcast (Using trip_id)
+            ws_delivered = await ws_manager.send_trip_event(
+                trip_id=trip.id, 
+                payload=cancellation_event
+            )
+            if ws_delivered:
+                logger.info(f"Cancellation WS message delivered to active trip room {trip.id}.")
+
+            # 6. Channel 2: System Push Notification Fallback
+            try:
+                await notification_service.send_user_push(
+                    user_id=str(trip.user_id),
+                    title="No Vans Available",
+                    body="We couldn't find a driver near you. Your trip has been cancelled and you were not charged.",
+                    data={
+                        "type": "TRIP_CANCELLED",
+                        "trip_id": str(trip.id),
+                        "reason": "NO_DRIVERS_AVAILABLE"
+                    },
+                    session=session
+                )
+            except Exception as push_err:
+                logger.error(f"Push notification error for trip {trip.id}: {str(push_err)}")
+
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Background task error auto-cancelling trip {trip_id}: {str(e)}", exc_info=True)

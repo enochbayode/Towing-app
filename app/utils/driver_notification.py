@@ -5,7 +5,11 @@ from fastapi.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
-async def push_trip_to_driver(fcm_token: str, trip_id: str, pickup_address: str, amount: str) -> bool:
+async def push_trip_to_driver(
+        fcm_token: str, 
+        trip_id: str, 
+        pickup_address: str, 
+        amount: str) -> bool:
     """
     Sends an FCM push notification to a driver without blocking the event loop.
     """

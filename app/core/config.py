@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # Debt Ceiling for Companies: If a company's debt exceeds this limit, they will be suspended from using the platform until they clear their dues.
     MAX_DEBT_CEILING_ALLOWED: float = 100000.00  # NGN 100,000.00
 
+    # Cancellation Fee: If a user cancels a trip after the driver has accepted it, they will be charged this fee.
+    CANCELLATION_FEE_NGN: float = 100.00  # NGN 100.00
+
     # --- CORS ---
     # This parses the string in .env into a real Python list
     ALLOWED_ORIGINS: List[str] = [

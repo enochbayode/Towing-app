@@ -7,14 +7,21 @@ from uuid import UUID, uuid4
 from datetime import datetime, timezone
 from decimal import Decimal
 
+def get_utc_now() -> datetime:
+    """
+    Returns a timezone-naive UTC datetime.
+    Required for PostgreSQL TIMESTAMP WITHOUT TIME ZONE columns.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 # --- ENUMS (State Machine) ---
 
 class TripStatus(str, enum.Enum):
     PENDING_ESTIMATE = "pending_estimate" # Initial draft state
     SEARCHING = "searching"               # User requested, broadcasting to drivers
     EN_ROUTE = "en_route"                 # Driver accepted, heading to pickup
-    TOWING = "towing"                     # Car hooked up, en route to drop-off
     ARRIVED = "arrived"                   # Driver arrived at drop-off (2-min timer active)
+    TOWING = "towing"                     # Car hooked up, en route to drop-off
     COMPLETED = "completed"               # Trip finished successfully
     CANCELLED = "cancelled"               # Cancelled by user or driver
     DISPUTED = "disputed"                 # User raised an issue at drop-off
@@ -74,12 +81,19 @@ class Trip(SQLModel, table=True):
     
     # Gateway Tracking
     paystack_reference: Optional[str] = Field(default=None, unique=True, index=True)
+
+    # cancellation Reason (if applicable)
+    cancellation_reason: Optional[str] = Field(default=None)
+
+    # arrival confirmation flags (for auto-confirmation logic)
+    arrival_confirmed: bool = Field(default=False)
+    arrival_auto_confirmed: bool = Field(default=False)
     
     # Status & Timestamps
     status: TripStatus = Field(default=TripStatus.PENDING_ESTIMATE, index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    arrived_at: Optional[datetime] = Field(default=None, description="When driver arrived at drop-off")
-    completed_at: Optional[datetime] = Field(default=None)
+    arrived_at: Optional[datetime] = Field(default=None, description="When driver arrived at pickup location")
+    completed_at: Optional[datetime] = Field(default=None, description="When trip was completed successfully")
 
     # Relationships
     transactions: List["Transaction"] = Relationship(back_populates="trip")
