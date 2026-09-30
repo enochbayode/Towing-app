@@ -18,7 +18,7 @@ from app.models.driver import Driver
 from app.models.company import Company
 
 from app.db.session import get_session, async_session_factory
-from app.api.deps import get_current_user, get_current_driver
+from app.api.deps import get_current_user, get_current_driver, get_current_courier
 from app.models.trip import (
     Trip, 
     TripStatus, 
@@ -53,6 +53,8 @@ from app.utils.geofence import calculate_distance_meters
 from app.core.config import settings
 from app.services.websocket_manager import ws_manager
 from app.utils.notification import notification_service
+from sqlmodel import select
+from sqlalchemy.orm import selectinload
 
 
 router = APIRouter()
@@ -929,18 +931,111 @@ async def confirm_courier_trip(
         )
 
 # -----tracking endpoint is below, which returns live driver coordinates and van details
+# @router.get("/user/courier/{trip_id}/tracking", response_model=APIResponse)
+# async def track_courier_trip(
+#     trip_id: str,
+#     session: AsyncSession = Depends(get_session),
+#     current_user = Depends(get_current_user)
+# )-> APIResponse:
+#     """
+#     Returns live tracking information for an ongoing courier trip, 
+#     including the driver's current GPS coordinates.
+#     """
+#     query = (
+#         select(CourierTrip)
+#         .where(CourierTrip.id == trip_id)
+#         .options(
+#             selectinload(CourierTrip.driver),
+#             selectinload(CourierTrip.vehicle)
+#         )
+#     )
+#     result = await session.execute(query)
+#     trip = result.scalar_one_or_none()  # <--- Extract the trip with its loaded relationships
+
+#     if not trip:
+#         raise HTTPException(status_code=404, detail="Trip not found.")
+        
+#     # Security: Ensure only the person who ordered it can track it
+#     if str(trip.user_id) != str(current_user.id):
+#         raise HTTPException(status_code=403, detail="Not authorized to track this trip.")
+
+#     # 2. Build the base tracking payload
+#     tracking_data = {
+#         "trip_id": str(trip.id),
+#         "status": trip.status,
+#         "pickup_lat": trip.pickup_lat,
+#         "pickup_lng": trip.pickup_lng,
+#         "dropoff_lat": trip.dropoff_lat,
+#         "dropoff_lng": trip.dropoff_lng,
+#         "started_transit_at": trip.started_transit_at,
+#         "driver": {
+#             "id": str(trip.driver.id),
+#             "name": trip.driver.full_name,          # Update these exact field names to match your Driver/User model
+#             "phone": trip.driver.phone_number,
+#             "photo_url": trip.driver.photo_url,
+#             "rating": trip.driver.rating
+#         } if trip.driver else None,
+#         "vehicle": {
+#             "id": str(trip.vehicle.id),
+#             "make": trip.vehicle.make,              # Update these exact field names to match your Vehicle model
+#             "model": trip.vehicle.model,
+#             "plate_number": trip.vehicle.plate_number,
+#             "color": trip.vehicle.color
+#         } if trip.vehicle else None
+#     }
+
+#     # 3. If a driver has accepted, inject their live coordinates and van details
+#     if trip.driver_id:
+#         driver = await session.get(CourierDriver, trip.driver_id)
+#         if driver:
+#             tracking_data["driver"] = {
+#                 "driver_id": str(driver.id),
+#                 # Adjust field names below if your decoupled driver model uses different ones
+#                 "name": f"{getattr(driver, 'first_name', '')} {getattr(driver, 'last_name', '')}".strip(),
+#                 "phone": getattr(driver, 'phone', 'N/A'),
+#                 "current_lat": driver.current_lat,
+#                 "current_lng": driver.current_lng
+#             }
+            
+#         if trip.vehicle_id:
+#             vehicle = await session.get(CourierVehicle, trip.vehicle_id)
+#             if vehicle:
+#                 tracking_data["vehicle"] = {
+#                     "make": vehicle.make,
+#                     "model": vehicle.model,
+#                     "license_plate": vehicle.license_plate,
+#                     "vehicle_type": vehicle.vehicle_type
+#                 }
+
+#     return APIResponse(
+#         success=True,
+#         message="Tracking info retrieved successfully.",
+#         data=tracking_data
+#     )
+
+
 @router.get("/user/courier/{trip_id}/tracking", response_model=APIResponse)
 async def track_courier_trip(
     trip_id: str,
     session: AsyncSession = Depends(get_session),
     current_user = Depends(get_current_user)
-)-> APIResponse:
+) -> APIResponse:
     """
     Returns live tracking information for an ongoing courier trip, 
     including the driver's current GPS coordinates.
     """
-    # 1. Fetch the trip
-    trip = await session.get(CourierTrip, trip_id)
+    # 1. Fetch trip with driver and vehicle eagerly loaded
+    query = (
+        select(CourierTrip)
+        .where(CourierTrip.id == trip_id)
+        .options(
+            selectinload(CourierTrip.driver),
+            selectinload(CourierTrip.vehicle)
+        )
+    )
+    result = await session.execute(query)
+    trip = result.scalar_one_or_none()
+
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found.")
         
@@ -948,7 +1043,8 @@ async def track_courier_trip(
     if str(trip.user_id) != str(current_user.id):
         raise HTTPException(status_code=403, detail="Not authorized to track this trip.")
 
-    # 2. Build the base tracking payload
+    # 2. Build the unified tracking payload
+    # Note: Double-check your model for exact field names (e.g., `phone` vs `phone_number`)
     tracking_data = {
         "trip_id": str(trip.id),
         "status": trip.status,
@@ -957,32 +1053,24 @@ async def track_courier_trip(
         "dropoff_lat": trip.dropoff_lat,
         "dropoff_lng": trip.dropoff_lng,
         "started_transit_at": trip.started_transit_at,
-        "driver": None,
-        "vehicle": None
+        "driver": {
+            "id": str(trip.driver.id),
+            "name": f"{getattr(trip.driver, 'first_name', '')} {getattr(trip.driver, 'last_name', '')}".strip() or getattr(trip.driver, 'full_name', 'N/A'),
+            "phone": getattr(trip.driver, 'phone', getattr(trip.driver, 'phone_number', 'N/A')),
+            "photo_url": getattr(trip.driver, 'photo_url', None),
+            "rating": getattr(trip.driver, 'rating', None),
+            "current_lat": getattr(trip.driver, 'current_lat', None),
+            "current_lng": getattr(trip.driver, 'current_lng', None)
+        } if trip.driver else None,
+        "vehicle": {
+            "id": str(trip.vehicle.id),
+            "make": getattr(trip.vehicle, 'make', None),
+            "model": getattr(trip.vehicle, 'model', None),
+            "color": getattr(trip.vehicle, 'color', None),
+            "license_plate": getattr(trip.vehicle, 'license_plate', getattr(trip.vehicle, 'plate_number', None)),
+            "vehicle_type": getattr(trip.vehicle, 'vehicle_type', None)
+        } if trip.vehicle else None
     }
-
-    # 3. If a driver has accepted, inject their live coordinates and van details
-    if trip.driver_id:
-        driver = await session.get(CourierDriver, trip.driver_id)
-        if driver:
-            tracking_data["driver"] = {
-                "driver_id": str(driver.id),
-                # Adjust field names below if your decoupled driver model uses different ones
-                "name": f"{getattr(driver, 'first_name', '')} {getattr(driver, 'last_name', '')}".strip(),
-                "phone": getattr(driver, 'phone', 'N/A'),
-                "current_lat": driver.current_lat,
-                "current_lng": driver.current_lng
-            }
-            
-        if trip.vehicle_id:
-            vehicle = await session.get(CourierVehicle, trip.vehicle_id)
-            if vehicle:
-                tracking_data["vehicle"] = {
-                    "make": vehicle.make,
-                    "model": vehicle.model,
-                    "license_plate": vehicle.license_plate,
-                    "vehicle_type": vehicle.vehicle_type
-                }
 
     return APIResponse(
         success=True,
@@ -995,7 +1083,7 @@ async def track_courier_trip(
 async def accept_courier_trip(
     trip_id: str,
     session: AsyncSession = Depends(get_session),
-    current_driver: CourierDriver = Depends(get_current_driver)
+    current_driver: CourierDriver = Depends(get_current_courier)
 )-> APIResponse:
     """
     Driver accepts a pending trip. 
@@ -1007,7 +1095,7 @@ async def accept_courier_trip(
         raise HTTPException(status_code=404, detail="Trip not found.")
         
     # 2. Check if the trip is still available
-    if trip.status != CourierStatus.PENDING:
+    if trip.status != CourierStatus.SEARCHING:
         raise HTTPException(
             status_code=400, 
             detail="This trip is no longer available. Another driver may have accepted it."
@@ -1040,11 +1128,11 @@ async def accept_courier_trip(
 async def decline_courier_trip(
     trip_id: str,
     session: AsyncSession = Depends(get_session),
-    current_driver: CourierDriver = Depends(get_current_driver)
+    current_driver: CourierDriver = Depends(get_current_courier)
 )-> APIResponse:
     """
     Driver declines a trip.
-    If they already accepted it, unassign them, penalize them, and revert the trip to PENDING.
+    If they already accepted it, unassign them, penalize them, and revert the trip to SEARCHING.
     """
     trip = await session.get(CourierTrip, trip_id)
     if not trip:
@@ -1056,7 +1144,7 @@ async def decline_courier_trip(
         # 1. Revert trip back to the matchmaking pool so the customer isn't stranded
         trip.driver_id = None
         trip.vehicle_id = None
-        trip.status = CourierStatus.PENDING
+        trip.status = CourierStatus.SEARCHING
         
         # 2. TODO: Implement Penalty Logic Here
         # Example: 
@@ -1077,7 +1165,7 @@ async def decline_courier_trip(
         )
         
     # SCENARIO B: Driver is just declining an initial ping (not accepted yet)
-    elif trip.status == CourierStatus.PENDING:
+    elif trip.status == CourierStatus.SEARCHING:
         # TODO: Add logic to a "trip_rejections" table so the matchmaking engine 
         # knows not to ping this specific driver for this specific trip again.
         
@@ -1100,7 +1188,7 @@ async def complete_courier_trip(
     trip_id: str,
     payload: DriverLocationPayload,
     session: AsyncSession = Depends(get_session),
-    current_driver = Depends(get_current_driver)
+    current_driver: CourierDriver = Depends(get_current_courier)
 ) -> APIResponse:
     """
     Driver clicks 'Complete Delivery'. Requires being within 50 meters of drop-off.
@@ -1175,7 +1263,7 @@ async def driver_arrived_at_dropoff(
     payload: DriverLocationPayload,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    current_driver = Depends(get_current_driver)
+    current_driver: CourierDriver = Depends(get_current_courier)
 ) -> APIResponse:
     """
     Marks trip as ARRIVED only if the driver is within 50 meters of the drop-off destination.
@@ -1232,7 +1320,7 @@ async def courier_driver_arrived(
     driver_lng: float,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    current_driver: User = Depends(get_current_user)
+    current_driver: CourierDriver = Depends(get_current_courier)
 ) -> APIResponse:
     trip = await session.get(CourierTrip, trip_id)
     
@@ -1318,7 +1406,7 @@ async def courier_driver_start_trip(
     trip_id: UUID,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    current_driver: User = Depends(get_current_user)
+    current_driver: CourierDriver = Depends(get_current_courier)
 ) -> APIResponse:
     trip = await session.get(CourierTrip, trip_id)
     

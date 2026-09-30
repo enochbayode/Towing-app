@@ -10,7 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 # Import your database and auth dependencies (adjust paths as needed)
 from app.db.session import get_session
-from app.api.deps import get_current_courier, get_current_user
+from app.api.deps import get_current_courier
 from app.models.user import User
 
 from app.db.session import get_session
@@ -501,7 +501,7 @@ async def delete_courier_vehicle(
 async def update_bank_details(
     payload: CourierBankUpdate,
     session: AsyncSession = Depends(get_session),
-    current_driver: CourierDriver = Depends(get_current_driver)
+    current_driver: CourierDriver = Depends(get_current_courier)
 )-> APIResponse:
     """
     Adds or updates a driver's bank account.
@@ -544,7 +544,7 @@ async def update_bank_details(
 @router.delete("/bank-details", response_model=APIResponse)
 async def delete_bank_details(
     session: AsyncSession = Depends(get_session),
-    current_driver: CourierDriver = Depends(get_current_driver)
+    current_driver: CourierDriver = Depends(get_current_courier)
 )-> APIResponse:
     """
     Deletes the driver's saved bank account details.

@@ -1,16 +1,19 @@
 # app/models/courier.py
 
 import enum
-from sqlmodel import SQLModel, Field
+from sqlmodel import SQLModel, Field, Relationship
 from uuid import UUID
 from uuid6 import uuid7
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from enum import Enum
-
 from sqlalchemy import Column, Enum as SAEnum
+
+if TYPE_CHECKING:
+    from app.models.courier_driver import CourierDriver
+    from app.models.courier_vehicle import CourierVehicle
 
 def get_utc_now_naive() -> datetime:
     """Returns a UTC datetime perfectly stripped of timezone info for PostgreSQL."""
@@ -105,6 +108,10 @@ class CourierTrip(SQLModel, table=True):
     # Confirmation flags
     arrival_confirmed: bool = Field(default=False)
     arrival_auto_confirmed: bool = Field(default=False)
+
+    # Relationships
+    driver: Optional["CourierDriver"] = Relationship() 
+    vehicle: Optional["CourierVehicle"] = Relationship()
 
 
 
