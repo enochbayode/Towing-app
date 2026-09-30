@@ -8,6 +8,10 @@ from typing import Optional
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from enum import Enum
+
+from sqlalchemy import Column, Enum as SAEnum
+
 def get_utc_now_naive() -> datetime:
     """Returns a UTC datetime perfectly stripped of timezone info for PostgreSQL."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -19,15 +23,17 @@ class CourierJobType(str, enum.Enum):
     FREIGHT = "freight"              # Heavy commercial/business bulk
 
 class CourierStatus(str, enum.Enum):
-    DRAFT = "DRAFT"
-    PENDING = "pending"
+    DRAFT = "draft"
+    SEARCHING = "searching"
     ACCEPTED = "accepted"
     EN_ROUTE_TO_PICKUP = "en_route_to_pickup"
+    ARRIVED = "arrived"                 # At pickup (2-min timer active)
     LOADING = "loading"
     IN_TRANSIT = "in_transit"
     UNLOADING = "unloading"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    DISPUTED = "disputed"
 
 class CourierTrip(SQLModel, table=True):
     __tablename__ = "courier_trips"
@@ -66,7 +72,17 @@ class CourierTrip(SQLModel, table=True):
     dropoff_instructions: Optional[str] = None
 
     # State Machine
-    status: CourierStatus = Field(default=CourierStatus.PENDING)
+    status: CourierStatus = Field(
+        default=CourierStatus.DRAFT,
+        sa_column=Column(
+            SAEnum(                              # <--- Use SAEnum here
+                CourierStatus, 
+                name="courierstatus", 
+                create_type=False, 
+                values_callable=lambda obj: [e.value for e in obj]
+            )
+        )
+    )
 
     # Financials
     total_cost: Decimal = Field(default=Decimal("0.00"), max_digits=10, decimal_places=2)
@@ -81,9 +97,14 @@ class CourierTrip(SQLModel, table=True):
 
     # Timestamps
     created_at: datetime = Field(default_factory=get_utc_now_naive)
+    arrived_at: Optional[datetime] = Field(default=None)
     started_loading_at: Optional[datetime] = None
     started_transit_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+    # Confirmation flags
+    arrival_confirmed: bool = Field(default=False)
+    arrival_auto_confirmed: bool = Field(default=False)
 
 
 

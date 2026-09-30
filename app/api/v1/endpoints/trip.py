@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.utils.dispatch_worker import broadcast_trip_to_drivers, timeout_pending_trip, wait_and_auto_complete_trip
-from app.utils.courier_dispatch_worker import wait_and_auto_complete_courier_trip, timeout_pending_courier_trip, broadcast_courier_trip_to_drivers
+from app.utils.courier_dispatch_worker import wait_and_auto_complete_courier_trip, timeout_pending_courier_trip, broadcast_courier_trip_to_drivers, wait_and_auto_confirm_courier_arrival
 from app.utils.geofence import calculate_distance_meters
 from app.core.config import settings
 from app.services.websocket_manager import ws_manager
@@ -489,7 +489,7 @@ async def wait_and_auto_confirm_arrival(
 #         message="Arrival confirmed."
 #     )
 
-
+# driver arrives at the pickup location and starts the 2-minute timer for user confirmation
 @router.post("/driver/{trip_id}/arrive", response_model=APIResponse)
 async def driver_arrived_at_pickup(
     trip_id: UUID,
@@ -768,6 +768,13 @@ async def get_trip_tracking_info(
     )
 
 
+#====================================================
+#          COURIER TRIP ENDPOINTS BELOW
+#====================================================
+
+def get_utc_now() -> datetime:
+    """Returns a UTC datetime perfectly stripped of timezone info for PostgreSQL."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 @router.post("/user/courier/estimate-price", response_model=APIResponse)
 async def request_courier_trip(
@@ -789,9 +796,9 @@ async def request_courier_trip(
 
     # 3. Build the database model
     new_trip = CourierTrip(
-        **trip_in.model_dump(), 
+        **trip_in.model_dump(exclude={"status"}), 
         user_id=current_user.id,
-        status=CourierStatus.DRAFT, 
+        status=CourierStatus.DRAFT,  # Initial state
         total_cost=final_total, 
         platform_fee=base_pricing["platform_fee"],
         driver_payout=base_pricing["driver_payout"],
@@ -892,7 +899,7 @@ async def confirm_courier_trip(
             )
             
         trip.paystack_reference = payment_data["reference"]
-        trip.status = CourierStatus.PENDING # Dispatch van immediately!
+        trip.status = CourierStatus.SEARCHING # Dispatch van immediately!
         
         session.add(trip)
         await session.commit()
@@ -1087,7 +1094,7 @@ async def decline_courier_trip(
             detail="You cannot decline a trip that is already in progress or completed."
         )
 
-
+# courier driver completes trip endpoint
 @router.post("/driver/courier_driver/{trip_id}/complete", response_model=APIResponse)
 async def complete_courier_trip(
     trip_id: str,
@@ -1161,7 +1168,6 @@ async def complete_courier_trip(
         }
     )
 
-
 # driver arrives at drop-off endpoint, triggers 2-minute auto-completion timer
 @router.post("/driver/courier_driver/{trip_id}/arrive", response_model=APIResponse)
 async def driver_arrived_at_dropoff(
@@ -1217,6 +1223,131 @@ async def driver_arrived_at_dropoff(
         data={"trip_id": str(trip.id), "status": trip.status, "distance_meters": round(distance, 1)}
     )
 
+
+# 1. DRIVER ARRIVAL AT PICKUP LOCATION
+@router.post("/driver/courier/{trip_id}/arrive", response_model=APIResponse)
+async def courier_driver_arrived(
+    trip_id: UUID,
+    driver_lat: float,
+    driver_lng: float,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+    current_driver: User = Depends(get_current_user)
+) -> APIResponse:
+    trip = await session.get(CourierTrip, trip_id)
+    
+    if not trip or str(trip.driver_id) != str(current_driver.id):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    if trip.status != CourierStatus.EN_ROUTE_TO_PICKUP:
+        raise HTTPException(status_code=400, detail=f"Cannot arrive from state: {trip.status}")
+
+    # 50m Geofence Validation
+    distance = calculate_distance_meters(driver_lat, driver_lng, trip.pickup_lat, trip.pickup_lng)
+    if distance > 50:
+        raise HTTPException(status_code=400, detail=f"Too far away: {distance:.1f}m. Get within 50m.")
+
+    # State Update
+    trip.status = CourierStatus.ARRIVED
+    trip.arrived_at = get_utc_now()
+    session.add(trip)
+    await session.commit()
+    await session.refresh(trip)
+
+    # Background Tasks
+    background_tasks.add_task(wait_and_auto_confirm_courier_arrival, trip.id, async_session_factory)
+    
+    background_tasks.add_task(
+        ws_manager.send_trip_event,
+        trip_id=trip.id,
+        payload={
+            "event": "COURIER_ARRIVED_AWAITING_CONFIRMATION",
+            "data": {"trip_id": str(trip.id), "message": "Courier is at the pickup location."}
+        }
+    )
+    
+    background_tasks.add_task(
+        notification_service.send_user_push,
+        user_id=str(trip.user_id),
+        title="Courier Arrived",
+        body="Your courier has arrived at the pickup spot. Please confirm in the app.",
+        data={"type": "COURIER_ARRIVED", "trip_id": str(trip.id)},
+        session=session
+    )
+
+    return APIResponse(success=True, message="Arrival recorded. Waiting for user confirmation.")
+
+
+# 2. USER CONFIRMS COURIER PRESENCE AT PICKUP
+@router.post("/user/courier/{trip_id}/confirm-arrival", response_model=APIResponse)
+async def user_confirms_courier_arrival(
+    trip_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> APIResponse:
+    trip = await session.get(CourierTrip, trip_id)
+    
+    if not trip or str(trip.user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+        
+    if trip.status != CourierStatus.ARRIVED:
+        raise HTTPException(status_code=400, detail="Courier has not marked arrival yet.")
+        
+    if trip.arrival_confirmed:
+        return APIResponse(success=True, message="Arrival already confirmed.")
+
+    trip.arrival_confirmed = True
+    trip.arrival_auto_confirmed = False
+    session.add(trip)
+    await session.commit()
+
+    await ws_manager.send_trip_event(
+        trip_id=trip.id, 
+        payload={
+            "event": "USER_CONFIRMED_COURIER_ARRIVAL",
+            "data": {"trip_id": str(trip.id), "message": "User confirmed presence."}
+        }
+    )
+
+    return APIResponse(success=True, message="Presence confirmed successfully.")
+
+
+# 3. DRIVER STARTS TRIP AFTER PACKAGES ARE LOADED
+@router.post("/driver/courier/{trip_id}/start", response_model=APIResponse)
+async def courier_driver_start_trip(
+    trip_id: UUID,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+    current_driver: User = Depends(get_current_user)
+) -> APIResponse:
+    trip = await session.get(CourierTrip, trip_id)
+    
+    if not trip or str(trip.driver_id) != str(current_driver.id):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    if trip.status not in [CourierStatus.ARRIVED, CourierStatus.LOADING]:
+        raise HTTPException(status_code=400, detail="Trip must be ARRIVED or LOADING to start.")
+
+    if not trip.arrival_confirmed:
+        raise HTTPException(status_code=400, detail="User confirmation required before starting.")
+
+    # State update to IN_TRANSIT
+    trip.status = CourierStatus.IN_TRANSIT
+    session.add(trip)
+    await session.commit()
+
+    background_tasks.add_task(
+        ws_manager.send_trip_event,
+        trip_id=trip.id,
+        payload={
+            "event": "COURIER_TRIP_IN_TRANSIT",
+            "data": {"trip_id": str(trip.id), "message": "Package loaded. Driver is in transit to drop-off."}
+        }
+    )
+
+    return APIResponse(success=True, message="Trip started. Proceed to destination.")
+
+
 from enum import Enum
 class UserCancelReason(str, Enum):
     DRIVER_ASKED_TO_CANCEL = "DRIVER_ASKED_TO_CANCEL"
@@ -1233,7 +1364,6 @@ DRIVER_FAULT_REASONS = {
     UserCancelReason.DRIVER_NOT_MOVING,
     UserCancelReason.TOO_LONG_ETA,
 }
-
 
 # cancel trip endpoint for users
 @router.post("/{trip_id}/cancel", response_model=APIResponse)

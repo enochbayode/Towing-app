@@ -106,6 +106,7 @@ async def broadcast_courier_trip_to_drivers(trip_id: str):
                     exc_info=True
                 )
 
+
 async def wait_and_auto_complete_courier_trip(
     trip_id: str,
     session_factory: async_sessionmaker[AsyncSession]
@@ -239,3 +240,27 @@ async def timeout_pending_courier_trip(
         except Exception as e:
             await session.rollback()
             logger.error(f"Background task error auto-cancelling trip {trip_id}: {str(e)}", exc_info=True)
+
+# 
+async def wait_and_auto_confirm_courier_arrival(
+    trip_id: UUID, 
+    session_factory: async_sessionmaker[AsyncSession]
+):
+    await asyncio.sleep(120)  # 2 minutes
+    
+    async with session_factory() as session:
+        trip = await session.get(CourierTrip, trip_id)
+        
+        if trip and trip.status == CourierStatus.ARRIVED and not trip.arrival_confirmed:
+            trip.arrival_confirmed = True
+            trip.arrival_auto_confirmed = True
+            session.add(trip)
+            await session.commit()
+            
+            await ws_manager.send_trip_event(
+                trip_id=trip.id, 
+                payload={
+                    "event": "COURIER_ARRIVAL_AUTO_CONFIRMED",
+                    "data": {"trip_id": str(trip.id), "message": "User arrival auto-confirmed."}
+                }
+            )
