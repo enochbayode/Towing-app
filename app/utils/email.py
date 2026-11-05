@@ -88,10 +88,10 @@ The SoulsDrive Team
         logger.error(f"EMAIL ERROR: Failed to send driver invite to {driver_email}: {str(e)}")
 
 
-async def send_company_status_email(email: str, company_name: str, status: str) -> None:
+async def send_company_status_email(email: str, company_name: str, status: str, reason: str = None) -> None:
     """
     Sends lifecycle emails for company registration.
-    status options: 'received', 'verified', 'manual_review'
+    status options: 'received', 'verified', 'manual_review', 'rejected'
     """
     try:
         resend.api_key = settings.RESEND_API_KEY
@@ -101,32 +101,51 @@ async def send_company_status_email(email: str, company_name: str, status: str) 
             body = f"""
             <h2>Welcome to the Platform, {company_name}!</h2>
             <p>Your fleet registration has been successfully received.</p>
-            <p>Our system is currently verifying your Corporate Affairs Commission (CAC) details. This process usually takes a few minutes, but can take up to 72 hours if manual review is required.</p>
+            <p>Our system is currently verifying your details. This process usually takes a few minutes, but can take up to 72 hours if manual review is required.</p>
             <p>We will notify you the moment your account is vetted and ready for dispatch operations.</p>
             """
+            
         elif status == "verified":
             subject = "Company Verified - Ready for Dispatch"
             body = f"""
             <h2>Verification Successful 🎉</h2>
-            <p>Great news! The CAC registration for <strong>{company_name}</strong> has been verified.</p>
+            <p>Great news! The registration for <strong>{company_name}</strong> has been verified.</p>
             <p>Your fleet is now fully vetted. You can log into your dashboard to add your payout bank accounts and start onboarding drivers.</p>
             """
+            
+        elif status == "rejected":
+            subject = "Verification Failed - Action Required"
+            body = f"""
+            <h2>Registration Update for {company_name}</h2>
+            <p>Unfortunately, our automated system could not verify your company details.</p>
+            """
+            # Inject the reason with a red alert style if provided
+            if reason:
+                body += f'<p style="padding: 12px; background-color: #fee2e2; border-left: 4px solid #ef4444; color: #991b1b;"><strong>Reason:</strong> {reason}</p>'
+            
+            body += "<p>Please ensure your NIN and CAC details are correct and try again, or contact support for assistance.</p>"
+            
         else: # manual_review
             subject = "Action Required - Manual Verification"
             body = f"""
             <h2>Registration Update for {company_name}</h2>
-            <p>We were unable to automatically verify your CAC registration number.</p>
-            <p>Our compliance team has received your file and will review it manually within the next 72 hours. We may reach out to this email if additional documents are required.</p>
+            <p>We were unable to automatically verify your registration numbers.</p>
             """
+            # Inject the reason with a yellow alert style if provided
+            if reason:
+                body += f'<p style="padding: 12px; background-color: #fef3c7; border-left: 4px solid #f59e0b; color: #92400e;"><strong>System Note:</strong> {reason}</p>'
+                
+            body += "<p>Our compliance team has received your file and will review it manually within the next 72 hours. We may reach out to this email if additional documents are required.</p>"
 
         params = {
             "from": settings.RESEND_FROM_EMAIL,
             "to": [email],
             "subject": subject,
-            "html": f'<div style="font-family: Arial, sans-serif; color: #2d3748;">{body}</div>'
+            "html": f'<div style="font-family: Arial, sans-serif; color: #2d3748; line-height: 1.6;">{body}</div>'
         }
         
         resend.Emails.send(params)
+        print(f"Successfully sent '{status}' email to {email}")
         
     except Exception as e:
-        logger.error(f"Failed to send {status} email to {email}: {str(e)}")
+        print(f"Failed to send '{status}' email to {email}. Error: {e}")

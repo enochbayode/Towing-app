@@ -18,6 +18,7 @@ class Driver(SQLModel, table=True):
     email: str = Field(unique=True, index=True, nullable=False)
     phone_number: str = Field(unique=True, index=True, nullable=True)
     hashed_password: str = Field(nullable=False)
+    license_number: str = Field(unique=True, index=True, nullable=False, description="Nigerian Driver's License Number")
     
     # Driver Specific Status
     # status can be: "pending" (awaiting admin approval), "accepted", "suspended"
@@ -27,15 +28,20 @@ class Driver(SQLModel, table=True):
     current_vehicle_id: Optional[uuid.UUID] = Field(default=None, index=True)
     
     # OTP & Verification
-    is_verified: bool = Field(default=False)
-    is_active: bool = Field(default=True)
+    is_verified: bool = Field(default=False) # whether the driver has completed KYC verification with lisense_number.
+    is_active: bool = Field(default=True) # as how the driver is currently allowed to log in and accept jobs
     otp_code: Optional[str] = Field(default=None)
     otp_expires_at: Optional[datetime] = Field(default=None)
 
-    is_online: bool = Field(default=False, index=True)
+    is_online: bool = Field(default=False, index=True) # currently logged into the app
     is_available: bool = Field(default=True, index=True) # False if currently towing
     current_lat: Optional[float] = None
     current_lng: Optional[float] = None
+
+    photo_url: Optional[str] = Field(default=None)
+
+    average_rating: float = Field(default=0.0)
+    total_reviews: int = Field(default=0)
 
     fcm_token: Optional[str] = Field(default=None, nullable=True) # For push notifications to the driver's device
     

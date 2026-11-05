@@ -17,19 +17,19 @@ from app.models.company import Company
 from app.schemas.user import APIResponse
 from app.schemas.driver import DriverInvite, DriverResponse, DriverStatusUpdate
 from app.utils.email import send_driver_invite_email
+from app.core.config import settings
 
 
 router = APIRouter()
 
 # Get the frontend URL from environment variables, fallback to a default
-DRIVER_APP_LOGIN_URL = os.getenv("DRIVER_APP_LOGIN_URL", "http://localhost:3000/driver/login")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.towingapp.com")
+DRIVER_APP_LOGIN_URL = settings.DRIVER_LOGIN_PAGE_URL
+FRONTEND_URL = settings.FRONTEND_URL
 
 def generate_temp_password(length: int = 10) -> str:
     """Generate a secure, random temporary password."""
     alphabet = string.ascii_letters + string.digits + "@#$%"
     return ''.join(secrets.choice(alphabet) for i in range(length))
-
 
 
 # --- 1. INVITE A DRIVER ---
@@ -157,7 +157,10 @@ async def get_company_drivers(
             phone_number=d.phone_number,
             status=d.status,
             is_verified=d.is_verified,
-            current_vehicle_id=str(d.current_vehicle_id) if d.current_vehicle_id else None
+            current_vehicle_id=str(d.current_vehicle_id) if d.current_vehicle_id else None,
+            photo_url=d.photo_url,
+            average_rating=d.average_rating,
+            total_reviews=d.total_reviews
         ) for d in drivers
     ]
 

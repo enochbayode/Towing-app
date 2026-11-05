@@ -3,6 +3,7 @@ from uuid6 import uuid7
 from datetime import datetime, timezone
 from typing import List, Optional, TYPE_CHECKING
 from sqlmodel import Field, SQLModel, Relationship
+from app.schemas.company import VerificationStatus
 
 # 1. HIDE THE IMPORTS INSIDE THIS BLOCK
 if TYPE_CHECKING:
@@ -15,13 +16,18 @@ class Company(SQLModel, table=True):
     
     id: uuid.UUID = Field(default_factory=uuid7, primary_key=True, index=True)
     name: str = Field(nullable=False, description="Registered name of the towing company")
-    rc_number: str = Field(unique=True, index=True, description="CAC Registration Number for vetting")
     office_address: str = Field(nullable=False)
     email: str = Field(nullable=False)
     phone_number: str = Field(nullable=False)
     
-    # Security/Vetting Status
-    is_vetted: bool = Field(default=False, description="Platform super-admin approves the company")
+    # Company Verification Tracking
+    verification_status: VerificationStatus = Field(default=VerificationStatus.UNVERIFIED, description="Current verification status of the company")
+    
+    # Store the verified business identification numbers
+    nin_number: Optional[str] = Field(unique=True, default=None, nullable=False, description="11-digit Director NIN")
+    cac_rc_number: Optional[str] = Field(unique=True, default=None, nullable=False, description="Business Registration Number (e.g., RC123456)")
+    
+    rejection_reason: Optional[str] = Field(default=None, description="Reason for rejection if the company verification is rejected")
     
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

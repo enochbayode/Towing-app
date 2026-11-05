@@ -1,5 +1,5 @@
 import enum
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, conint
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
@@ -7,6 +7,9 @@ from decimal import Decimal
 
 # Import your Enums from the models file so Pydantic can validate against them!
 from app.models.trip import TripStatus, TransactionType
+from app.models.trip import PhotoAngle
+
+from app.models.reviews import RatingCategory
 
 # ==========================================
 # ENUMS (Local to Trip)
@@ -58,6 +61,22 @@ class TripUpdate(BaseModel):
     status: Optional[TripStatus] = None
     driver_id: Optional[UUID] = Field(None, description="Set when a driver accepts the trip")
     company_id: Optional[UUID] = Field(None, description="Set when a company's driver accepts the trip")
+
+
+class TripReviewCreate(BaseModel):
+    rating: conint(ge=1, le=5)  # Restricts input strictly to 1-5 stars
+    categories: List[RatingCategory] = []
+    comment: Optional[str] = None
+
+class PhotoUploadRequest(BaseModel):
+    angle: PhotoAngle
+    content_type: str = "image/jpeg"
+
+class PresignedUrlResponse(BaseModel):
+    photo_id: UUID
+    angle: PhotoAngle
+    upload_url: str  # The driver's app PUTs the image file directly to this URL
+    image_url: str   # The final URL where the image will be accessible
 
 class TripResponse(TripBase):
     """

@@ -28,4 +28,4 @@ def generate_invite_token() -> str:
     """
     Generates a high-entropy URL-safe token for manager invites.
     """
-    return secrets.token_urlsafe(32)
+    return secrets.token_urlsafe(32) 

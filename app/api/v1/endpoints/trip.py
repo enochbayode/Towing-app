@@ -47,6 +47,13 @@ from app.services.pricing_engine import calculate_tow_cost
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+import os
+from typing import List
+from uuid6 import uuid7
+from supabase import create_client, Client
+from app.schemas.trip import PhotoUploadRequest
+from app.models.trip import Trip, TowingTripPhoto, PhotoStage
+
 from app.utils.dispatch_worker import broadcast_trip_to_drivers, timeout_pending_trip, wait_and_auto_complete_trip
 from app.utils.courier_dispatch_worker import wait_and_auto_complete_courier_trip, timeout_pending_courier_trip, broadcast_courier_trip_to_drivers, wait_and_auto_confirm_courier_arrival
 from app.utils.geofence import calculate_distance_meters
@@ -433,64 +440,6 @@ async def wait_and_auto_confirm_arrival(
             }
             await ws_manager.send_trip_event(trip_id=trip.id, payload=auto_confirm_event)
 
-#=================== Background task ends here============================
-
-# driver arrives at where the user's vehicle is located and starts the 2-minute timer for user confirmation
-# @router.post("/driver/{trip_id}/arrive", response_model=APIResponse)
-# async def driver_arrived_at_pickup(
-#     trip_id: UUID,
-#     driver_lat: float,  # Sent from the driver's phone at the moment they press the button
-#     driver_lng: float,
-#     background_tasks: BackgroundTasks,
-#     session: AsyncSession = Depends(get_session),
-#     current_driver: Driver = Depends(get_current_driver)  # Assuming driver auth
-# ) -> APIResponse:
-#     trip = await session.get(Trip, trip_id)
-    
-#     if not trip or str(trip.driver_id) != str(current_driver.id):
-#         raise HTTPException(status_code=403, detail="Unauthorized for this trip.")
-
-#     if trip.status != TripStatus.EN_ROUTE:
-#         raise HTTPException(status_code=400, detail=f"Cannot arrive from state {trip.status}")
-
-#     # 1. Strict Pickup Geofence Check (50 meters)
-#     distance_to_pickup = calculate_distance_meters(
-#         driver_lat, driver_lng, 
-#         trip.pickup_lat, trip.pickup_lng
-#     )
-
-#     if distance_to_pickup > 50.0:
-#         raise HTTPException(
-#             status_code=400, 
-#             detail=f"You are {int(distance_to_pickup)}m away from the pickup location. Get closer to arrive."
-#         )
-
-#     # 2. Update Status
-#     trip.status = TripStatus.ARRIVED
-#     session.add(trip)
-#     await session.commit()
-
-#     # Trigger the 2-minute auto-confirm countdown
-#     background_tasks.add_task(
-#         wait_and_auto_confirm_arrival, 
-#         trip_id, 
-#         async_session_factory
-#     )
-
-#     # 3. Alert the User
-#     arrival_event = {
-#         "event": "DRIVER_ARRIVED",
-#         "data": {"trip_id": str(trip.id), "message": "Your driver is outside."}
-#     }
-#     await ws_manager.send_trip_event(trip_id=trip.id, payload=arrival_event)
-    
-#     # TODO: Trigger push notification to user ("Driver is outside!")
-
-#     return APIResponse(
-#         success=True, 
-#         message="Arrival confirmed."
-#     )
-
 # driver arrives at the pickup location and starts the 2-minute timer for user confirmation
 @router.post("/driver/{trip_id}/arrive", response_model=APIResponse)
 async def driver_arrived_at_pickup(
@@ -770,9 +719,80 @@ async def get_trip_tracking_info(
     )
 
 
-#====================================================
+
+# Initialize Supabase Client (Usually done in a config/db file)
+SUPABASE_URL = settings.SUPABASE_URL
+SUPABASE_SERVICE_KEY = settings.SUPABASE_SERVICE_KEY # Use Service Role key to bypass RLS for url generation
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+BUCKET_NAME = "towing-photos"
+
+@router.post("/{trip_id}/photos/presigned-urls", response_model=APIResponse)
+async def generate_photo_upload_urls(
+    trip_id: str,
+    requests: List[PhotoUploadRequest],
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(get_current_user) # Assuming driver is the current user
+):
+    """
+    Generates direct-to-Supabase upload URLs for the 4 pre-loading photos.
+    """
+    # 1. Verify trip exists
+    trip = await session.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found.")
+        
+    response_data = []
+    
+    # 2. Generate URLs and database records for each requested angle
+    for req in requests:
+        photo_id = uuid7()
+        # Clean file path: towing-trips/{trip_id}/pre_loading/{photo_id}.jpg
+        file_path = f"towing-trips/{trip.id}/pre_loading/{photo_id}.jpg"
+        
+        # Generate the Supabase Signed Upload URL
+        # This returns a dict with the signed URL the frontend will upload to
+        upload_res = supabase.storage.from_(BUCKET_NAME).create_signed_upload_url(file_path)
+        
+        # Extract the upload URL from the Supabase response
+        upload_url = upload_res.get("signed_url")
+        if not upload_url:
+            raise HTTPException(status_code=500, detail="Failed to generate Supabase upload URL")
+
+        # Get the final permanent public URL where the image will be viewed later
+        final_image_url = supabase.storage.from_(BUCKET_NAME).get_public_url(file_path)
+        
+        # 3. Save the placeholder to your PostgreSQL database
+        new_photo = TowingTripPhoto(
+            id=photo_id,
+            trip_id=trip.id,
+            stage=PhotoStage.PRE_LOADING,
+            angle=req.angle,
+            image_url=final_image_url
+        )
+        session.add(new_photo)
+        
+        response_data.append({
+            "photo_id": str(photo_id),
+            "angle": req.angle,
+            "upload_url": upload_url,
+            "image_url": final_image_url
+        })
+        
+    # Save all 4 photo records to the database simultaneously
+    await session.commit()
+
+    return APIResponse(
+        success=True,
+        message="Upload URLs generated successfully.",
+        data=response_data
+    )
+
+
+
+#==================================================================================================================================
 #          COURIER TRIP ENDPOINTS BELOW
-#====================================================
+#=================================================================================================================================
 
 def get_utc_now() -> datetime:
     """Returns a UTC datetime perfectly stripped of timezone info for PostgreSQL."""
@@ -930,89 +950,6 @@ async def confirm_courier_trip(
             }
         )
 
-# -----tracking endpoint is below, which returns live driver coordinates and van details
-# @router.get("/user/courier/{trip_id}/tracking", response_model=APIResponse)
-# async def track_courier_trip(
-#     trip_id: str,
-#     session: AsyncSession = Depends(get_session),
-#     current_user = Depends(get_current_user)
-# )-> APIResponse:
-#     """
-#     Returns live tracking information for an ongoing courier trip, 
-#     including the driver's current GPS coordinates.
-#     """
-#     query = (
-#         select(CourierTrip)
-#         .where(CourierTrip.id == trip_id)
-#         .options(
-#             selectinload(CourierTrip.driver),
-#             selectinload(CourierTrip.vehicle)
-#         )
-#     )
-#     result = await session.execute(query)
-#     trip = result.scalar_one_or_none()  # <--- Extract the trip with its loaded relationships
-
-#     if not trip:
-#         raise HTTPException(status_code=404, detail="Trip not found.")
-        
-#     # Security: Ensure only the person who ordered it can track it
-#     if str(trip.user_id) != str(current_user.id):
-#         raise HTTPException(status_code=403, detail="Not authorized to track this trip.")
-
-#     # 2. Build the base tracking payload
-#     tracking_data = {
-#         "trip_id": str(trip.id),
-#         "status": trip.status,
-#         "pickup_lat": trip.pickup_lat,
-#         "pickup_lng": trip.pickup_lng,
-#         "dropoff_lat": trip.dropoff_lat,
-#         "dropoff_lng": trip.dropoff_lng,
-#         "started_transit_at": trip.started_transit_at,
-#         "driver": {
-#             "id": str(trip.driver.id),
-#             "name": trip.driver.full_name,          # Update these exact field names to match your Driver/User model
-#             "phone": trip.driver.phone_number,
-#             "photo_url": trip.driver.photo_url,
-#             "rating": trip.driver.rating
-#         } if trip.driver else None,
-#         "vehicle": {
-#             "id": str(trip.vehicle.id),
-#             "make": trip.vehicle.make,              # Update these exact field names to match your Vehicle model
-#             "model": trip.vehicle.model,
-#             "plate_number": trip.vehicle.plate_number,
-#             "color": trip.vehicle.color
-#         } if trip.vehicle else None
-#     }
-
-#     # 3. If a driver has accepted, inject their live coordinates and van details
-#     if trip.driver_id:
-#         driver = await session.get(CourierDriver, trip.driver_id)
-#         if driver:
-#             tracking_data["driver"] = {
-#                 "driver_id": str(driver.id),
-#                 # Adjust field names below if your decoupled driver model uses different ones
-#                 "name": f"{getattr(driver, 'first_name', '')} {getattr(driver, 'last_name', '')}".strip(),
-#                 "phone": getattr(driver, 'phone', 'N/A'),
-#                 "current_lat": driver.current_lat,
-#                 "current_lng": driver.current_lng
-#             }
-            
-#         if trip.vehicle_id:
-#             vehicle = await session.get(CourierVehicle, trip.vehicle_id)
-#             if vehicle:
-#                 tracking_data["vehicle"] = {
-#                     "make": vehicle.make,
-#                     "model": vehicle.model,
-#                     "license_plate": vehicle.license_plate,
-#                     "vehicle_type": vehicle.vehicle_type
-#                 }
-
-#     return APIResponse(
-#         success=True,
-#         message="Tracking info retrieved successfully.",
-#         data=tracking_data
-#     )
-
 
 @router.get("/user/courier/{trip_id}/tracking", response_model=APIResponse)
 async def track_courier_trip(
@@ -1058,7 +995,7 @@ async def track_courier_trip(
             "name": f"{getattr(trip.driver, 'first_name', '')} {getattr(trip.driver, 'last_name', '')}".strip() or getattr(trip.driver, 'full_name', 'N/A'),
             "phone": getattr(trip.driver, 'phone', getattr(trip.driver, 'phone_number', 'N/A')),
             "photo_url": getattr(trip.driver, 'photo_url', None),
-            "rating": getattr(trip.driver, 'rating', None),
+            "total_ratings": getattr(trip.driver, 'total_ratings', None),
             "current_lat": getattr(trip.driver, 'current_lat', None),
             "current_lng": getattr(trip.driver, 'current_lng', None)
         } if trip.driver else None,

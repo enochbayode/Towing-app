@@ -267,7 +267,9 @@ async def get_courier_profile(
             "is_available": current_courier.is_available,
             "can_do_labor": current_courier.can_do_labor,
             "interstate_enabled": current_courier.interstate_enabled,
-            "current_vehicle_id": str(current_courier.current_vehicle_id) if current_courier.current_vehicle_id else None
+            "current_vehicle_id": str(current_courier.current_vehicle_id) if current_courier.current_vehicle_id else None,
+            "average_rating": current_courier.average_rating,
+            "total_reviews": current_courier.total_reviews
         }
     )
 

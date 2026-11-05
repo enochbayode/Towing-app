@@ -1,30 +1,79 @@
+# from contextlib import asynccontextmanager
+# from fastapi import FastAPI
+# from fastapi.middleware.cors import CORSMiddleware
+# from sqlmodel import SQLModel
+# from arq import create_pool
+# from arq.connections import RedisSettings
+
+# # Adjust these imports based on your exact project structure
+# from app.core.config import settings
+# from app.core.middleware import TimeoutMiddleware 
+# from app.api.v1.api import api_router
+
+# # --- DATABASE IMPORTS ADDED HERE ---
+# from app.db.session import engine
+
+# import app.db.base  # Ensure all models are imported so they are registered with SQLModel
+
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     """
+#     The sole lifecycle manager for your application.
+#     """
+#     # Startup logic: Perform initial setup here
+#     print("Application is starting up...")
+#     # app.state.redis = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+#     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
+#     redis_settings.ssl_cert_reqs = "none"
+    
+#     # Create pool with the updated settings
+#     app.state.redis = await create_pool(redis_settings)
+    
+#     yield  # The application runs here
+    
+#     # Shutdown logic: Perform cleanup here
+#     print("Application is shutting down...")
+#     app.state.redis.close()
+#     await app.state.redis.wait_closed()
+
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel
+from arq import create_pool
+from arq.connections import RedisSettings
+from urllib.parse import urlparse # <-- NEW IMPORT
 
-# Adjust these imports based on your exact project structure
 from app.core.config import settings
 from app.core.middleware import TimeoutMiddleware 
 from app.api.v1.api import api_router
-
-# --- DATABASE IMPORTS ADDED HERE ---
 from app.db.session import engine
-
-import app.db.base  # Ensure all models are imported so they are registered with SQLModel
+import app.db.base  
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    The sole lifecycle manager for your application.
-    """
-    # Startup logic: Perform initial setup here
     print("Application is starting up...")
     
-    yield  # The application runs here
+    # 1. Parse the Upstash URL manually
+    parsed_url = urlparse(settings.REDIS_URL)
     
-    # Shutdown logic: Perform cleanup here
+    # 2. Force SSL to True so Upstash doesn't hang up
+    redis_settings = RedisSettings(
+        host=parsed_url.hostname,
+        port=parsed_url.port or 6379,
+        password=parsed_url.password,
+        ssl=True 
+    )
+    
+    # 3. Bypass the Windows certificate check
+    redis_settings.ssl_cert_reqs = "none"
+    
+    app.state.redis = await create_pool(redis_settings)
+    yield  
     print("Application is shutting down...")
+    app.state.redis.close()
+    await app.state.redis.wait_closed()
 
 
 def get_application() -> FastAPI:

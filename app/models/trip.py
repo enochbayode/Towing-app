@@ -50,6 +50,33 @@ class LedgerEntryType(str, enum.Enum):
     CARD_PAYOUT = "card_payout"           # Positive: Company's share from card trips
 
 
+class PhotoStage(str, enum.Enum):
+    PRE_LOADING = "pre_loading"
+    POST_DROPOFF = "post_dropoff"
+
+class PhotoAngle(str, enum.Enum):
+    FRONT = "front"
+    REAR = "rear"
+    LEFT = "left"
+    RIGHT = "right"
+   
+
+class TowingTripPhoto(SQLModel, table=True):
+    __tablename__ = "towing_trip_photos"
+    
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    trip_id: UUID = Field(foreign_key="trips.id", index=True)
+    
+    stage: PhotoStage = Field(default=PhotoStage.PRE_LOADING)
+    angle: PhotoAngle
+    image_url: str  # The final public or private URL where the image will live
+    
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationship back to the trip
+    trip: Optional["Trip"] = Relationship(back_populates="photos")
+
+
 # --- DATABASE MODELS ---
 
 class Trip(SQLModel, table=True):
@@ -78,6 +105,9 @@ class Trip(SQLModel, table=True):
     total_cost: Decimal = Field(default=Decimal("0.00"), max_digits=10, decimal_places=2)
     platform_fee: Decimal = Field(default=Decimal("0.00"), max_digits=10, decimal_places=2)
     company_payout: Decimal = Field(default=Decimal("0.00"), max_digits=10, decimal_places=2)
+
+    # Relationships photos of the vehicle at different stages of the trip (pre-loading, post-dropoff)
+    photos: List[TowingTripPhoto] = Relationship(back_populates="trip")
     
     # Gateway Tracking
     paystack_reference: Optional[str] = Field(default=None, unique=True, index=True)
@@ -98,6 +128,7 @@ class Trip(SQLModel, table=True):
     # Relationships
     transactions: List["Transaction"] = Relationship(back_populates="trip")
     ledger_entries: List["CompanyLedger"] = Relationship(back_populates="trip")
+
 
 
 class CompanyLedger(BaseTable := SQLModel, table=True):

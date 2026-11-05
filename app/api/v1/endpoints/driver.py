@@ -5,6 +5,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 
 # Adjust paths to match your project
+from uuid6 import uuid7
+from app.core.supabase import supabase
 from app.db.session import get_session
 from app.core import security
 from app.api.deps import get_current_driver
@@ -12,6 +14,7 @@ from app.models.driver import Driver
 from app.models.vehicle import Vehicle
 from app.schemas.user import APIResponse, LoginRequest, ChangePasswordRequest
 from app.schemas.driver import DriverInviteAction, DriverResponse, DriverTokenData, DriverProfileUpdate
+from app.services.kyc import verify_drivers_license, DojahNetworkError
 
 router = APIRouter()
 
@@ -61,7 +64,6 @@ async def respond_to_invite(
     # Update password, status, and verification state
     driver.hashed_password = security.get_password_hash(response_in.new_password)
     driver.status = "accepted"
-    driver.is_verified = True
     
     session.add(driver)
     await session.commit()
@@ -77,7 +79,8 @@ async def respond_to_invite(
         email=driver.email,
         phone_number=driver.phone_number,
         status=driver.status,
-        is_verified=driver.is_verified
+        is_verified=False,  # Newly accepted drivers are not verified until they complete KYC
+        
     )
 
     return APIResponse(
@@ -154,7 +157,10 @@ async def get_driver_me(
         phone_number=current_driver.phone_number,
         status=current_driver.status,
         is_verified=current_driver.is_verified,
-        current_vehicle_id=str(current_driver.current_vehicle_id) if current_driver.current_vehicle_id else None
+        current_vehicle_id=str(current_driver.current_vehicle_id) if current_driver.current_vehicle_id else None,
+        photo_url=current_driver.photo_url,
+        average_rating=current_driver.average_rating,
+        total_reviews=current_driver.total_reviews
     )
 
     return APIResponse(
@@ -201,15 +207,17 @@ async def change_driver_password(
     )
 
 # --- 5. DRIVER PROFILE MANAGEMENT ---
+
 @router.patch("/profile", response_model=APIResponse)
 async def update_driver_profile(
     payload: DriverProfileUpdate,
     session: AsyncSession = Depends(get_session),
-    current_driver: Driver = Depends(get_current_driver)
-)-> APIResponse:
+    current_driver = Depends(get_current_driver)
+) -> APIResponse:
     """
     Updates the authenticated driver's profile information.
     Excludes sensitive fields like passwords and emails.
+    Triggers Driver's License verification if updated.
     """
     # 1. Extract ONLY the fields the client sent in the request
     update_data = payload.model_dump(exclude_unset=True)
@@ -220,11 +228,46 @@ async def update_driver_profile(
             detail="No valid fields provided for update."
         )
 
-    # 2. Iterate through the dictionary and update the SQLModel instance
+    # 2. Handle Driver's License Verification
+    if "license_number" in update_data:
+        new_license = update_data["license_number"]
+        
+        # Only trigger API call if it's a new license OR if they are currently unverified
+        if new_license != current_driver.license_number or not current_driver.is_verified:
+            
+            # Check if another driver is already using this license
+            statement = select(current_driver.__class__).where(
+                current_driver.__class__.license_number == new_license, 
+                current_driver.__class__.id != current_driver.id
+            )
+            result = await session.execute(statement)
+            if result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=400, 
+                    detail="This license number is already registered to another driver."
+                )
+
+            # Run Dojah Verification
+            try:
+                is_license_valid = await verify_drivers_license(new_license)
+                if not is_license_valid:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Invalid Driver's License. Could not verify records."
+                    )
+                # Verification passed! 
+                current_driver.is_verified = True
+            except DojahNetworkError:
+                raise HTTPException(
+                    status_code=503, 
+                    detail="License verification service is temporarily unavailable. Please try again."
+                )
+
+    # 3. Iterate through the dictionary and apply all other updates
     for key, value in update_data.items():
         setattr(current_driver, key, value)
 
-    # 3. Save to database
+    # 4. Save to database
     session.add(current_driver)
     await session.commit()
     await session.refresh(current_driver)
@@ -234,9 +277,12 @@ async def update_driver_profile(
         message="Profile updated successfully.",
         data={
             "id": str(current_driver.id),
-            "full_name": current_driver.full_name,
+            "full_name": getattr(current_driver, "full_name", None),
             "phone_number": current_driver.phone_number,
-            "email": current_driver.email, # Safe to return, just not safe to edit here
+            "email": current_driver.email, 
+            "photo_url": getattr(current_driver, "photo_url", None),
+            "license_number": current_driver.license_number,
+            "is_verified": current_driver.is_verified # Return the new status to the frontend
         }
     )
 
@@ -250,6 +296,14 @@ async def get_fleet_vehicles(
     Returns all active vehicles in the driver's company.
     The frontend can use `driver_id` to show if a truck is 'Available' or 'In Use'.
     """
+
+    # first check if the driver is verified before allowing them to see the fleet vehicles
+    if not current_driver.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must complete KYC verification with a valid Driver's License before accessing fleet vehicles."
+        )
+
     statement = select(Vehicle).where(
         Vehicle.company_id == current_driver.company_id,
         Vehicle.is_active == True
@@ -296,6 +350,13 @@ async def select_vehicle(
         if old_vehicle:
             old_vehicle.driver_id = None
             session.add(old_vehicle)
+
+    # check if the driver is verified before allowing them to select a vehicle
+    if not current_driver.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must complete KYC verification with a valid Driver's License before selecting a vehicle."
+        )
 
     # 4. Secure the NEW vehicle (Sync both tables)
     vehicle.driver_id = current_driver.id
@@ -344,4 +405,39 @@ async def release_current_vehicle(
         success=True,
         message="Vehicle released successfully. Shift ended.",
         data=None
+    )
+
+# --- 9. DRIVER AVATAR ---
+@router.post("/profile/photo/upload-url", response_model=APIResponse)
+async def generate_profile_photo_url(
+    current_driver: Driver = Depends(get_current_driver)
+) -> APIResponse:
+    """
+    Generates a secure Supabase upload URL for the driver's profile picture.
+    """
+    # 1. Create a clean file path: driver-avatars/{driver_id}/avatar_{uuid}.jpg
+    # Using a UUID prevents browser caching issues when they change their photo
+    file_id = uuid7()
+    file_path = f"driver-avatars/{current_driver.id}/avatar_{file_id}.jpg"
+    
+    # We use a public bucket named 'avatars' 
+    BUCKET_NAME = "avatars"
+
+    # 2. Generate the Signed Upload URL
+    upload_res = supabase.storage.from_(BUCKET_NAME).create_signed_upload_url(file_path)
+    
+    upload_url = upload_res.get("signed_url")
+    if not upload_url:
+        raise HTTPException(status_code=500, detail="Failed to generate Supabase upload URL")
+
+    # 3. Get the final public URL
+    final_image_url = supabase.storage.from_(BUCKET_NAME).get_public_url(file_path)
+
+    return APIResponse(
+        success=True,
+        message="Profile photo upload URL generated.",
+        data={
+            "upload_url": upload_url,       # Frontend PUTs the image file here
+            "final_image_url": final_image_url # Frontend sends this to the PATCH endpoint later
+        }
     )

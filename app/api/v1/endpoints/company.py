@@ -8,6 +8,9 @@ from typing import Any
 from decimal import Decimal
 from uuid import UUID
 from sqlalchemy.exc import IntegrityError
+from typing import List
+from uuid6 import uuid7
+from app.core.supabase import supabase
 
 from app.schemas.company import (
     CompanyCreate, 
@@ -31,10 +34,18 @@ from app.schemas.user import APIResponse
 from app.schemas.driver import DriverStatusUpdate
 from app.schemas.vehicle import VehicleCreate, VehicleUpdate
 from app.services.paystack_integration import create_paystack_subaccount, initialize_debt_settlement
+from app.schemas.company import VerificationStatus, CompanyVerificationSubmit
+from app.services.kyc import verify_plate_number, DojahNetworkError 
+from app.services.kyc import verify_nin, verify_cac
+
+
 from app.core.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+BUCKET_NAME = "company-documents"
 
 @router.post("/admin/register", response_model=APIResponse[CompanyResponse])
 async def register_company(
@@ -65,20 +76,60 @@ async def register_company(
     session.add(current_admin)
     await session.commit()
 
-    # 4. Fire the background worker
-    background_tasks.add_task(
-        process_company_verification,
-        company_id=new_company.id,
-        rc_number=new_company.rc_number,
-        company_name=new_company.name,
-        admin_email=current_admin.email
-    )
+    # # 4. Fire the background worker
+    # background_tasks.add_task(
+    #     process_company_verification,
+    #     company_id=new_company.id,
+    #     rc_number=new_company.rc_number,
+    #     company_name=new_company.name,
+    #     admin_email=current_admin.email
+    # )
 
     # 5. Return success to the UI immediately
     return APIResponse(
         success=True,
         message="Company registered successfully. Verification is pending.",
         data=new_company
+    )
+
+# company verification submission endpoint
+@router.post("/company/verification/submit", response_model=APIResponse)
+async def submit_company_verification(
+    payload: CompanyVerificationSubmit,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+    current_admin = Depends(get_current_admin)
+) -> APIResponse:
+    
+    # 1. Fetch the Company linked to the current Admin
+    # (Adjust 'company_id' if your Admin model uses a different foreign key name)
+    company = await session.get(Company, current_admin.company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company profile not found for this admin.")
+
+    if company.verification_status == VerificationStatus.VERIFIED:
+        raise HTTPException(status_code=400, detail="Company is already verified.")
+
+    # 2. Update the status on the Company record, not the Admin record
+    company.verification_status = VerificationStatus.PENDING_REVIEW
+    company.rejection_reason = None
+    session.add(company)
+    await session.commit()
+
+    # 3. Pass the company ID to the background task (not the admin ID)
+    background_tasks.add_task(
+        process_company_verification,
+        company_id=str(company.id), 
+        nin_number=payload.nin_number,
+        rc_number=payload.cac_rc_number,
+        company_name=getattr(company, "company_name", getattr(company, "name", "Towing Partner")),
+        admin_email=current_admin.email
+    )
+
+    return APIResponse(
+        success=True,
+        message="Verification request submitted. Status updates will be sent via email.",
+        data={"verification_status": company.verification_status}
     )
 
 # get company 
@@ -291,7 +342,6 @@ async def update_payment_account(
         data=existing_account
     )
 
-
 # Dashboard metrics for the company
 @router.get("/dashboard", response_model=APIResponse)
 async def get_company_dashboard(
@@ -501,25 +551,38 @@ async def get_company_trips(
         data=trips
     )
 
-
 #===========Company Vehicle Management Endpoints===========
-
-@router.post("/add-vehicle", response_model=APIResponse)
+@router.post("/company/vehicle", response_model=APIResponse)
 async def add_vehicle(
     payload: VehicleCreate,
     session: AsyncSession = Depends(get_session),
-    current_admin: Admin = Depends(get_current_admin)
-)-> APIResponse:
-    """Adds a new tow truck to the company's fleet."""
+    current_admin = Depends(get_current_admin)
+) -> APIResponse:
+    """Adds a new tow truck to the company's fleet after verifying the plate via NIID."""
     if not current_admin.company_id:
         raise HTTPException(status_code=400, detail="Register a company profile first.")
 
-    # Check for duplicate license plates
+    # 2. Check for duplicate license plates in your database
     statement = select(Vehicle).where(Vehicle.license_plate == payload.license_plate)
     result = await session.execute(statement)
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="A vehicle with this license plate already exists.")
 
+    # 3. Verify the License Plate with NIID via Dojah
+    try:
+        is_plate_valid = await verify_plate_number(payload.license_plate)
+        if not is_plate_valid:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid license plate. Could not verify registration with NIID."
+            )
+    except DojahNetworkError:
+        raise HTTPException(
+            status_code=503, 
+            detail="NIID verification service is temporarily unavailable. Please try again later."
+        )
+
+    # 4. Save the vehicle if verification passes
     new_vehicle = Vehicle(
         **payload.model_dump(),
         company_id=current_admin.company_id,
@@ -530,17 +593,22 @@ async def add_vehicle(
     await session.commit()
     await session.refresh(new_vehicle)
 
-    return APIResponse(success=True, message="Vehicle added successfully.", data=new_vehicle)
+    return APIResponse(
+        success=True, 
+        message="Vehicle verified and added successfully.", 
+        data=new_vehicle
+    )
 
-
-@router.patch("/{vehicle_id}", response_model=APIResponse)
+# Update Vehicle Endpoint
+@router.put("/company/vehicle/{vehicle_id}", response_model=APIResponse)
 async def update_vehicle(
     vehicle_id: UUID,
     payload: VehicleUpdate,
     session: AsyncSession = Depends(get_session),
-    current_admin: Admin = Depends(get_current_admin)
-)-> APIResponse:
-    """Edits an existing vehicle's details."""
+    current_admin = Depends(get_current_admin)
+) -> APIResponse:
+    """Edits an existing vehicle's details and verifies the plate if changed."""
+    # 1. Fetch the existing vehicle
     statement = select(Vehicle).where(
         Vehicle.id == vehicle_id, 
         Vehicle.company_id == current_admin.company_id
@@ -552,6 +620,32 @@ async def update_vehicle(
         raise HTTPException(status_code=404, detail="Vehicle not found.")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    # 2. If the license plate is being updated, verify it first
+    if "license_plate" in update_data and update_data["license_plate"] != vehicle.license_plate:
+        new_plate = update_data["license_plate"]
+
+        # Check for duplicates in your database first
+        dup_statement = select(Vehicle).where(Vehicle.license_plate == new_plate)
+        dup_result = await session.execute(dup_statement)
+        if dup_result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="A vehicle with this license plate already exists.")
+
+        # Verify the new plate with NIID via Dojah
+        try:
+            is_plate_valid = await verify_plate_number(new_plate)
+            if not is_plate_valid:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid license plate. Could not verify registration with NIID."
+                )
+        except DojahNetworkError:
+            raise HTTPException(
+                status_code=503, 
+                detail="NIID verification service is temporarily unavailable. Please try again later."
+            )
+
+    # 3. Apply the updates
     for key, value in update_data.items():
         setattr(vehicle, key, value)
 
@@ -564,7 +658,6 @@ async def update_vehicle(
         message="Vehicle updated successfully.", 
         data=vehicle
     )
-
 
 # Delete Vehicle Endpoint
 @router.delete("/{vehicle_id}", response_model=APIResponse)

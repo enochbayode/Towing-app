@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 4320  # Changed default to 24 hours to satisfy frontend requirements
 
+
     # --- DATABASE ---
     # We use a Field to allow environment variable overrides
     DATABASE_URL: str
@@ -30,14 +31,18 @@ class Settings(BaseSettings):
     # --- OFFLINE AI MODELS ---
     # Defaulting to local paths if not set in .env
     
-    DRIVER_APP_LOGIN_URL: AnyHttpUrl = Field(default="http://localhost:3000/driver/login")  # Default for local development
+    DRIVER_LOGIN_PAGE_URL: AnyHttpUrl = Field(default="http://localhost:3000/driver/login")  # Default for local development
+    FRONTEND_URL: AnyHttpUrl = Field(default="http://localhost:3000")  # Default for local development
     
     DOJAH_API_KEY: str
     DOJAH_APP_ID: str
+    DOJAH_BASE_URL: str
 
-    PREMBLY_SECRET_KEY: str = "dummmyyyyyyyyyyyyyyyyyy"
+    PREMBLY_SECRET_KEY: str
 
-    GOOGLE_MAPS_API_KEY: str = "dummmyyyyyyyyyyyyyyyyyy"
+    GOOGLE_MAPS_API_KEY: str 
+
+    REDIS_URL: str #"redis://localhost:6379" # Default fallback for local testing
 
     USER_FEE_PERCENTAGE: float = 0.03
     COMPANY_PAYOUT_PERCENTAGE: float = 0.90
@@ -45,27 +50,30 @@ class Settings(BaseSettings):
 
     PAYSTACK_SECRET_KEY: str
 
+    SUPABASE_URL: str 
+    SUPABASE_SERVICE_KEY : str  # Use Service Role key to bypass RLS for url generation
+
     # MAX_COMMISSION_DEBT: float = 15000.00
 
     # Courier Pricing Config
-    COURIER_BASE_FARE: float = 5000.00
-    COURIER_PER_KM_RATE: float = 250.00
-    COURIER_LABOR_SURCHARGE: float = 3000.00
-    COURIER_PASSENGER_SURCHARGE: float = 1000.00
-    COURIER_INTERSTATE_SURCHARGE: float = 25000.00
-    COURIER_NIGHT_MULTIPLIER: float = 1.50
-    COURIER_PLATFORM_COMMISSION: float = 0.15
+    COURIER_BASE_FARE: float 
+    COURIER_PER_KM_RATE: float
+    COURIER_LABOR_SURCHARGE: float
+    COURIER_PASSENGER_SURCHARGE: float
+    COURIER_INTERSTATE_SURCHARGE: float
+    COURIER_NIGHT_MULTIPLIER: float 
+    COURIER_PLATFORM_COMMISSION: float 
 
     # Vehicle Type Multipliers
-    COURIER_MULT_MOTORCYCLE: float = 0.4
-    COURIER_MULT_SPRINTER: float = 1.0
-    COURIER_MULT_BOX_TRUCK: float = 2.5
+    COURIER_MULT_MOTORCYCLE: float
+    COURIER_MULT_SPRINTER: float 
+    COURIER_MULT_BOX_TRUCK: float 
 
     # Debt Ceiling for Companies: If a company's debt exceeds this limit, they will be suspended from using the platform until they clear their dues.
-    MAX_DEBT_CEILING_ALLOWED: float = 100000.00  # NGN 100,000.00
+    MAX_DEBT_CEILING_ALLOWED: float  # NGN 100,000.00
 
     # Cancellation Fee: If a user cancels a trip after the driver has accepted it, they will be charged this fee.
-    CANCELLATION_FEE_NGN: float = 100.00  # NGN 100.00
+    CANCELLATION_FEE_NGN: float  # NGN 100.00
 
     # --- CORS ---
     # This parses the string in .env into a real Python list

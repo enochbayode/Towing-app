@@ -45,6 +45,9 @@ class CourierDriver(SQLModel, table=True):
     current_lat: Optional[float] = None
     current_lng: Optional[float] = None
 
+    average_rating: float = Field(default=0.0)
+    total_reviews: int = Field(default=0)
+
     # Account details 
     bank_name: Optional[str] = Field(default=None)
     bank_code: Optional[str] = Field(default=None)
