@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # --- PROJECT SETTINGS ---
-    PROJECT_NAME: str = "VOCAAFRICA Kiosk API"
+    PROJECT_NAME: str = "TOWING APP API"
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
     DEBUG: bool = True
