@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
     yield  
     print("Application is shutting down...")
     app.state.redis.close()
-    await app.state.redis.wait_closed()
+    await app.state.redis.close()
 
 
 def get_application() -> FastAPI:
