@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     DOJAH_API_KEY: str
     DOJAH_APP_ID: str
     DOJAH_BASE_URL: str
+    DOJAH_AUTHORIZATION: str  # <-- Added this new field for Dojah Authorization header
 
     PREMBLY_SECRET_KEY: str
 

@@ -108,12 +108,12 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-DOJAH_BASE_URL = "https://api.dojah.io"
+DOJAH_BASE_URL = settings.DOJAH_BASE_URL  # Use the base URL from settings
 
 def _get_headers() -> dict:
     """Returns the required headers for Dojah API requests."""
     return {
-        "Authorization": settings.DOJAH_SECRET_KEY,
+        "Authorization": settings.DOJAH_AUTHORIZATION,
         "AppId": settings.DOJAH_APP_ID,
         "Accept": "application/json"
     }
