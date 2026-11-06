@@ -18,7 +18,7 @@ class Driver(SQLModel, table=True):
     email: str = Field(unique=True, index=True, nullable=False)
     phone_number: str = Field(unique=True, index=True, nullable=True)
     hashed_password: str = Field(nullable=False)
-    license_number: str = Field(unique=True, index=True, nullable=False, description="Nigerian Driver's License Number")
+    license_number: Optional[str] = Field(default=None)
     
     # Driver Specific Status
     # status can be: "pending" (awaiting admin approval), "accepted", "suspended"

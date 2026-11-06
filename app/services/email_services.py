@@ -8,7 +8,12 @@ FROM_EMAIL = settings.RESEND_FROM_EMAIL
 
 logger = logging.getLogger(__name__)
 
-def send_otp(email: str, full_name: str, otp_code: str, role: str) -> None:
+def send_otp(
+    email: str, 
+    full_name: str, 
+    otp_code: str, 
+    role: str
+    ) -> None:
     """
     Sends a 6-digit OTP verification email via Resend.
     Adapts the email subject and messaging based on the recipient's role.
@@ -70,6 +75,7 @@ def send_otp(email: str, full_name: str, otp_code: str, role: str) -> None:
         # TEMPORARY DEBUG PRINT (Remove after fixing!)
         print(f"DEBUG: My API key is exactly -> '{settings.RESEND_API_KEY}'")
         logger.error(f"---> Failed to send OTP email to {email}: {str(e)}")
+        print(f"DEBUG: FROM_EMAIL is -> '{FROM_EMAIL}'")
         # Optionally re-raise the exception if you want the API endpoint to fail 
         # when the email fails to send:
         # raise Exception("Email dispatch failed") from e

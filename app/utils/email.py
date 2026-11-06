@@ -1,10 +1,9 @@
-import os
 import resend
 import logging
 from app.core.config import settings
 
-# Ensure these are set in your environment or core config
-resend.api_key = os.getenv("RESEND_API_KEY")
+# Global configuration from Pydantic settings (safer than os.getenv)
+resend.api_key = settings.RESEND_API_KEY
 FROM_EMAIL = settings.RESEND_FROM_EMAIL
 
 logger = logging.getLogger(__name__)
@@ -20,15 +19,16 @@ async def send_driver_invite_email(
     Sends an onboarding invitation to a new driver using the Resend SDK.
     Includes both plain text and HTML fallbacks.
     """
-    
     # --- PLAIN TEXT VERSION ---
     text_content = f"""Hello {driver_name},
 
-You have been invited by {company_name} to join the SoulsDrive network as a Towing Fleet Operator.
+You have been invited by {company_name} to join the Ezer network as a Towing Fleet Operator.
 
 Your account has been provisioned with the following login details:
-• Email: {driver_email}
-• Temporary Password: {temp_password}
+- Email: 
+{driver_email}
+- Temporary Password: 
+{temp_password}
 
 To finalize your account setup, please visit the secure link below to Accept or Decline this invitation:
 {invite_link}
@@ -37,14 +37,14 @@ Note: You will be asked to enter the email and temporary password provided above
 You can only accept or decline this invitation once, and the link will expire after 7 days for security reasons.
 
 Best regards,
-The SoulsDrive Team
+The Ezer Team
 """
 
     # --- HTML VERSION ---
     html_content = f"""
     <html>
       <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #dd6b20;">Welcome to SoulsDrive!</h2>
+        <h2 style="color: #dd6b20;">Welcome to Ezer!</h2>
         <p>Hello <strong>{driver_name}</strong>,</p>
         
         <p>You have been invited by <strong>{company_name}</strong> to join the platform as a <strong>Towing Fleet Operator</strong>.</p>
@@ -67,16 +67,16 @@ The SoulsDrive Team
         <a href="{invite_link}" style="color: #2b6cb0;">{invite_link}</a></p>
         
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;">
-        <p style="font-size: 0.85em; color: #718096;">Best regards,<br><strong>The SoulsDrive Team</strong></p>
+        <p style="font-size: 0.85em; color: #718096;">Best regards,<br><strong>The Ezer Team</strong></p>
       </body>
     </html>
     """
 
     try:
         params = {
-            "from": f"<{FROM_EMAIL}>",
+            "from": FROM_EMAIL,  # <-- FIXED: Removed the extra < >
             "to": [driver_email],
-            "subject": f"Invitation: Join {company_name} on SoulsDrive",
+            "subject": f"Invitation: Join {company_name} on Ezer",
             "text": text_content,
             "html": html_content
         }
@@ -94,8 +94,6 @@ async def send_company_status_email(email: str, company_name: str, status: str, 
     status options: 'received', 'verified', 'manual_review', 'rejected'
     """
     try:
-        resend.api_key = settings.RESEND_API_KEY
-        
         if status == "received":
             subject = "Registration Received - Awaiting Verification"
             body = f"""
@@ -119,10 +117,8 @@ async def send_company_status_email(email: str, company_name: str, status: str, 
             <h2>Registration Update for {company_name}</h2>
             <p>Unfortunately, our automated system could not verify your company details.</p>
             """
-            # Inject the reason with a red alert style if provided
             if reason:
                 body += f'<p style="padding: 12px; background-color: #fee2e2; border-left: 4px solid #ef4444; color: #991b1b;"><strong>Reason:</strong> {reason}</p>'
-            
             body += "<p>Please ensure your NIN and CAC details are correct and try again, or contact support for assistance.</p>"
             
         else: # manual_review
@@ -131,21 +127,19 @@ async def send_company_status_email(email: str, company_name: str, status: str, 
             <h2>Registration Update for {company_name}</h2>
             <p>We were unable to automatically verify your registration numbers.</p>
             """
-            # Inject the reason with a yellow alert style if provided
             if reason:
                 body += f'<p style="padding: 12px; background-color: #fef3c7; border-left: 4px solid #f59e0b; color: #92400e;"><strong>System Note:</strong> {reason}</p>'
-                
             body += "<p>Our compliance team has received your file and will review it manually within the next 72 hours. We may reach out to this email if additional documents are required.</p>"
 
         params = {
-            "from": settings.RESEND_FROM_EMAIL,
+            "from": FROM_EMAIL, # Unified to use the global FROM_EMAIL variable
             "to": [email],
             "subject": subject,
             "html": f'<div style="font-family: Arial, sans-serif; color: #2d3748; line-height: 1.6;">{body}</div>'
         }
         
         resend.Emails.send(params)
-        print(f"Successfully sent '{status}' email to {email}")
+        logger.info(f"Successfully sent '{status}' email to {email}")
         
     except Exception as e:
-        print(f"Failed to send '{status}' email to {email}. Error: {e}")
+        logger.error(f"Failed to send '{status}' email to {email}. Error: {e}")
